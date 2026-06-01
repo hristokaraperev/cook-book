@@ -132,14 +132,24 @@ function LandingPage() {
           >
             Sign in with Google
           </Button>
-          <Grid container spacing={3} sx={{ mt: 6 }}>
+          <Grid container spacing={3} alignItems="stretch" sx={{ mt: 6 }}>
             {[
               { icon: '🔍', title: 'Smart Nutrition', body: 'Look up ingredients from the USDA database and get auto-calculated calories per portion.' },
               { icon: '📄', title: 'Google Drive', body: 'Every recipe is saved as a beautifully formatted Google Doc in your Drive.' },
               { icon: '✉️', title: 'Share via Gmail', body: 'Send recipes to your contacts directly from your Gmail account.' },
             ].map((f) => (
-              <Grid item xs={12} sm={4} key={f.title}>
-                <Paper elevation={0} sx={{ p: 3, textAlign: 'center', background: 'rgba(230,81,0,0.05)', borderRadius: 3 }}>
+              <Grid item xs={12} sm={4} key={f.title} sx={{ display: 'flex' }}>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 3,
+                    width: '100%',
+                    minHeight: 190,
+                    textAlign: 'center',
+                    background: 'rgba(230,81,0,0.05)',
+                    borderRadius: 3,
+                  }}
+                >
                   <Typography fontSize={36}>{f.icon}</Typography>
                   <Typography variant="h6" gutterBottom fontWeight={600}>{f.title}</Typography>
                   <Typography variant="body2" color="text.secondary">{f.body}</Typography>

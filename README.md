@@ -42,3 +42,11 @@ npm run dev
 ```
 
 Open http://localhost:5173.
+
+## Commit Messages
+
+This repo includes a Git commit message template in `.gitmessage`. Enable it for your local clone with:
+
+```bash
+git config --local commit.template .gitmessage
+```

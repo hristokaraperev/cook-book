@@ -39,12 +39,18 @@ export async function searchFoods(query) {
   }))
 }
 
-function extractCalories(nutrients = []) {
-  const kcal = nutrients.find(
-    (n) =>
-      (n.nutrientName === 'Energy' || n.nutrientName === 'Energy (Atwater General Factors)') &&
-      n.unitName === 'kcal'
-  )
+const ENERGY_NUTRIENT_NAMES = ['Energy (Atwater General Factors)', 'Energy']
+
+export function extractCalories(nutrients = []) {
+  const kcal = nutrients
+    .filter((n) => ENERGY_NUTRIENT_NAMES.includes(n.nutrientName))
+    .sort(
+      (a, b) =>
+        ENERGY_NUTRIENT_NAMES.indexOf(a.nutrientName) -
+        ENERGY_NUTRIENT_NAMES.indexOf(b.nutrientName)
+    )
+    .find((n) => n.unitName?.toLowerCase() === 'kcal')
+
   return kcal?.value ?? 0
 }
 

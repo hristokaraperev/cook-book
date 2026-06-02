@@ -189,6 +189,22 @@ function buildMultipartBody(metadata, htmlContent) {
 
 function buildRecipeHtml(recipe) {
   const totalTime = (recipe.prepTime || 0) + (recipe.cookTime || 0)
+  const statCells = [
+    { value: recipe.caloriesPerServing || 0, label: 'kcal / serving' },
+    { value: recipe.servings || 1, label: 'servings' },
+    recipe.prepTime ? { value: recipe.prepTime, label: 'min prep' } : null,
+    recipe.cookTime ? { value: recipe.cookTime, label: 'min cook' } : null,
+    totalTime ? { value: totalTime, label: 'min total' } : null,
+  ]
+    .filter(Boolean)
+    .map(
+      (stat) =>
+        `<td class="stat">
+          <div class="stat-value">${stat.value}</div>
+          <div class="stat-label">${stat.label}</div>
+        </td>`
+    )
+    .join('')
   const ingredientRows = (recipe.ingredients || [])
     .map(
       (i) =>
@@ -214,11 +230,11 @@ function buildRecipeHtml(recipe) {
   h2 { color: #BF360C; font-size: 18px; border-bottom: 2px solid #FF8F00; padding-bottom: 6px; margin-top: 28px; }
   .category { color: #FF8F00; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; font-size: 13px; }
   .description { color: #666; font-size: 15px; margin: 12px 0 20px; }
-  .stats { background: #FFF8E1; border-radius: 10px; padding: 16px 24px; margin: 20px 0; display: flex; gap: 32px; }
-  .stat { text-align: center; }
+  .stats { width: auto; background: #FFF8E1; border-radius: 10px; margin: 20px auto; border-collapse: collapse; }
+  .stat { text-align: center; padding: 16px 10px; vertical-align: top; }
   .stat-value { font-size: 26px; font-weight: bold; color: #E65100; }
   .stat-label { font-size: 12px; color: #888; margin-top: 2px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  .ingredients-table { width: 90%; border-collapse: collapse; margin: 12px auto 0; }
   th { background: #FFF3E0; padding: 8px 12px; text-align: left; font-size: 13px; color: #888; }
   .total-box { background: #FFF3E0; border-radius: 8px; padding: 16px 24px; margin-top: 24px; text-align: center; font-size: 16px; }
   .total-kcal { font-size: 22px; font-weight: bold; color: #E65100; }
@@ -230,21 +246,13 @@ function buildRecipeHtml(recipe) {
 <p class="category">${recipe.category || ''}</p>
 <h1>${recipe.name}</h1>
 ${recipe.description ? `<p class="description">${recipe.description}</p>` : ''}
-<div class="stats">
-  <div class="stat">
-    <div class="stat-value">${recipe.caloriesPerServing || 0}</div>
-    <div class="stat-label">kcal / serving</div>
-  </div>
-  <div class="stat">
-    <div class="stat-value">${recipe.servings || 1}</div>
-    <div class="stat-label">servings</div>
-  </div>
-  ${recipe.prepTime ? `<div class="stat"><div class="stat-value">${recipe.prepTime}</div><div class="stat-label">min prep</div></div>` : ''}
-  ${recipe.cookTime ? `<div class="stat"><div class="stat-value">${recipe.cookTime}</div><div class="stat-label">min cook</div></div>` : ''}
-  ${totalTime ? `<div class="stat"><div class="stat-value">${totalTime}</div><div class="stat-label">min total</div></div>` : ''}
-</div>
+<table class="stats" align="center">
+  <tbody>
+    <tr>${statCells}</tr>
+  </tbody>
+</table>
 <h2>Ingredients</h2>
-<table>
+<table class="ingredients-table" align="center">
   <thead>
     <tr>
       <th>Ingredient</th>

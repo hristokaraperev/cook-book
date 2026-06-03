@@ -56,6 +56,156 @@ function hasCalories(calories) {
   return calories !== undefined && calories !== null && calories !== ''
 }
 
-export function buildRecipeDocumentRequests() {
-  return []
+// ─── Google Docs request builder ──────────────────────────────────────────────
+//
+// Builds a native Google Docs batchUpdate request list from the template model.
+// A forward cursor tracks the next insertion index as content is appended top to
+// bottom, so paragraph styles and list bullets can target exact ranges.
+
+export function buildRecipeDocumentRequests(template) {
+  const builder = new DocumentBuilder()
+
+  builder.heading(template.title, 'TITLE')
+  if (template.description) builder.heading(template.description, 'SUBTITLE')
+  builder.summaryBlock(template.summary)
+  builder.heading('Ingredients', 'HEADING_1')
+  builder.ingredientTable(template.ingredients)
+  builder.heading('Instructions', 'HEADING_1')
+  builder.numberedList(template.instructions)
+  builder.footer(template.footer)
+
+  return builder.requests
+}
+
+class DocumentBuilder {
+  constructor() {
+    this.requests = []
+    this.cursor = 1
+  }
+
+  // Appends a paragraph of text, returning its [start, end) range.
+  paragraph(text) {
+    const content = `${text}\n`
+    const start = this.cursor
+    this.requests.push({
+      insertText: { location: { index: start }, text: content },
+    })
+    this.cursor += content.length
+    return { startIndex: start, endIndex: this.cursor }
+  }
+
+  heading(text, namedStyleType) {
+    const range = this.paragraph(text)
+    this.requests.push({
+      updateParagraphStyle: {
+        range,
+        paragraphStyle: { namedStyleType },
+        fields: 'namedStyleType',
+      },
+    })
+    return range
+  }
+
+  // Renders a 4-column ingredient table (header + one row per ingredient).
+  ingredientTable(ingredients) {
+    if (!ingredients || ingredients.length === 0) return
+
+    const rows = [
+      ['Ingredient', 'Amount', 'Unit', 'Calories'],
+      ...ingredients.map((ingredient) => [
+        ingredient.name,
+        ingredient.amount,
+        ingredient.unit,
+        ingredient.calories ?? '',
+      ]),
+    ]
+    this.table(rows)
+  }
+
+  // Inserts a native Google Docs table and fills its cells.
+  //
+  // Google reserves index space for the table structure. For an empty table
+  // inserted at location L with C columns, the paragraph inside cell (row, col)
+  // starts at L + 1 + row * (2C + 1) + 2 * col, and the whole empty table spans
+  // R * (2C + 1) index units. Cells are filled from last to first so that each
+  // insertion only shifts indices after cells that are still empty, keeping the
+  // remaining computed indices valid.
+  table(rows) {
+    const tableStart = this.cursor
+    const numRows = rows.length
+    const numCols = rows[0].length
+
+    this.requests.push({
+      insertTable: {
+        location: { index: tableStart },
+        rows: numRows,
+        columns: numCols,
+      },
+    })
+
+    const cells = []
+    for (let r = 0; r < numRows; r += 1) {
+      for (let c = 0; c < numCols; c += 1) {
+        const text = String(rows[r][c] ?? '')
+        if (text === '') continue
+        const index = tableStart + 1 + r * (2 * numCols + 1) + 2 * c
+        cells.push({ index, text })
+      }
+    }
+
+    let insertedLength = 0
+    for (const cell of cells.reverse()) {
+      this.requests.push({
+        insertText: { location: { index: cell.index }, text: cell.text },
+      })
+      insertedLength += cell.text.length
+    }
+
+    this.cursor = tableStart + numRows * (2 * numCols + 1) + insertedLength
+  }
+
+  // Renders a compact one-line summary of available facts in restrained styling.
+  summaryBlock(summary) {
+    if (!summary || summary.length === 0) return
+    const line = summary.map((fact) => `${fact.label}: ${fact.value}`).join('  ·  ')
+    this.subtleParagraph(line)
+  }
+
+  // Renders a subtle footer at the end of the document.
+  footer(text) {
+    if (!text) return
+    this.subtleParagraph(text)
+  }
+
+  // A paragraph in restrained styling: smaller, muted text for supporting content.
+  subtleParagraph(text) {
+    const range = this.paragraph(text)
+    this.requests.push({
+      updateTextStyle: {
+        range,
+        textStyle: {
+          fontSize: { magnitude: 9, unit: 'PT' },
+          foregroundColor: { color: { rgbColor: { red: 0.4, green: 0.4, blue: 0.4 } } },
+        },
+        fields: 'fontSize,foregroundColor',
+      },
+    })
+    return range
+  }
+
+  // Renders steps as a native numbered list rather than manually numbered text.
+  numberedList(steps) {
+    if (!steps || steps.length === 0) return
+
+    const startIndex = this.cursor
+    for (const step of steps) this.paragraph(step)
+    const endIndex = this.cursor
+
+    this.requests.push({
+      createParagraphBullets: {
+        range: { startIndex, endIndex },
+        bulletPreset: 'NUMBERED_DECIMAL_NESTED',
+      },
+    })
+  }
 }

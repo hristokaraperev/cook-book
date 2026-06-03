@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createRecipeDoc, listRecipes } from './driveService.js'
+import { createRecipeDoc, listRecipes, updateRecipeDoc } from './driveService.js'
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
 
@@ -18,6 +18,14 @@ const jsonResponse = (body, init = {}) => ({
 function multipartMetadata(body) {
   const match = String(body).match(/Content-Type: application\/json; charset=UTF-8\r\n\r\n(.+?)\r\n--/s)
   return match ? JSON.parse(match[1]) : null
+}
+
+function multipartJsonContent(body) {
+  const parts = String(body).split('--cookbook_boundary_789')
+  const contentPart = parts.find((part) => part.includes('Content-Type: application/json; charset=UTF-8') && !part.trim().startsWith('Content-Type: application/json; charset=UTF-8\r\n\r\n{}'))
+  if (!contentPart) return null
+  const json = contentPart.split('\r\n\r\n').at(1)?.trim()
+  return json ? JSON.parse(json) : null
 }
 
 const sampleRecipe = {
@@ -267,4 +275,174 @@ test('createRecipeDoc allows duplicate recipe names by using disambiguated recor
   assert.match(recordNames[0], /^lemon-pasta-.+\.json$/)
   assert.match(recordNames[1], /^lemon-pasta-.+\.json$/)
   assert.notEqual(recordNames[0], recordNames[1])
+})
+
+test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Document in place', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  const calls = []
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options }
+    calls.push(request)
+    const parsed = new URL(request.url)
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        name: 'Lemon Pasta',
+        driveDocId: 'doc-789',
+        driveDocUrl: 'https://docs.google.com/document/d/doc-789/edit',
+        documentTemplateVersion: 1,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789') && parsed.searchParams.get('fields') === 'body(content(endIndex))') {
+      return jsonResponse({ body: { content: [{ endIndex: 1 }, { endIndex: 120 }] } })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${request.url}`)
+  }
+
+  const updated = await updateRecipeDoc({
+    id: 'record-123',
+    ...sampleRecipe,
+    name: 'Lemon Pasta with Basil',
+    description: 'Brighter pasta with herbs',
+    instructions: ['Boil pasta', 'Toss with lemon and basil'],
+    updatedAt: '2026-06-03T11:00:00.000Z',
+  })
+
+  assert.equal(updated.id, 'record-123')
+  assert.equal(updated.name, 'Lemon Pasta with Basil')
+  assert.equal(updated.driveDocId, 'doc-789')
+  assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/doc-789/edit')
+
+  const documentUpdate = calls.find(
+    (call) => call.options.method === 'POST' && call.url.endsWith('/v1/documents/doc-789:batchUpdate')
+  )
+  assert.ok(documentUpdate, 'expected existing Recipe Document to be updated in place')
+  const documentRequests = JSON.parse(documentUpdate.options.body).requests
+  assert.deepEqual(documentRequests[0], {
+    deleteContentRange: {
+      range: { startIndex: 1, endIndex: 119 },
+    },
+  })
+  assert.match(documentRequests[1].insertText.text, /^Lemon Pasta with Basil\n/)
+  assert.match(documentRequests[1].insertText.text, /Toss with lemon and basil/)
+
+  const recordUpdate = calls.find(
+    (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
+  )
+  assert.ok(recordUpdate, 'expected Recipe Record to be saved')
+  const savedRecord = multipartJsonContent(recordUpdate.options.body)
+  assert.equal(savedRecord.name, 'Lemon Pasta with Basil')
+  assert.equal(savedRecord.updatedAt, '2026-06-03T11:00:00.000Z')
+  assert.equal(savedRecord.driveDocId, 'doc-789')
+})
+
+test('updateRecipeDoc recreates a missing Recipe Document and patches the Recipe Record reference', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  const calls = []
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options }
+    calls.push(request)
+    const parsed = new URL(request.url)
+    const q = parsed.searchParams.get('q') || ''
+    const contentType = options.headers?.['Content-Type'] || ''
+    const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        driveDocId: 'deleted-doc',
+        driveDocUrl: 'https://docs.google.com/document/d/deleted-doc/edit',
+        documentTemplateVersion: 1,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/deleted-doc') && parsed.searchParams.get('fields') === 'body(content(endIndex))') {
+      return jsonResponse({ error: 'not found' }, { ok: false, status: 404 })
+    }
+
+    if (q.includes("name='Cookbook'")) {
+      return jsonResponse({ files: [{ id: 'cookbook-folder' }] })
+    }
+
+    if (q.includes("name='.data'")) {
+      return jsonResponse({ files: [{ id: 'record-folder' }] })
+    }
+
+    if (q.includes("name='Recipes'")) {
+      return jsonResponse({ files: [{ id: 'document-folder' }] })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents')) {
+      assert.equal(body.title, 'Lemon Pasta Rebuilt')
+      return jsonResponse({ documentId: 'replacement-doc', title: 'Lemon Pasta Rebuilt' })
+    }
+
+    if (options.method !== 'PATCH' && parsed.pathname.endsWith('/drive/v3/files/replacement-doc')) {
+      return jsonResponse({ parents: ['root'], webViewLink: 'https://docs.google.com/document/d/replacement-doc/edit' })
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/drive/v3/files/replacement-doc')) {
+      return jsonResponse({ id: 'replacement-doc', webViewLink: 'https://docs.google.com/document/d/replacement-doc/edit' })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/replacement-doc:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${request.url}`)
+  }
+
+  const updated = await updateRecipeDoc({
+    id: 'record-123',
+    ...sampleRecipe,
+    name: 'Lemon Pasta Rebuilt',
+    updatedAt: '2026-06-03T11:30:00.000Z',
+  })
+
+  assert.equal(updated.id, 'record-123')
+  assert.equal(updated.driveDocId, 'replacement-doc')
+  assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/replacement-doc/edit')
+  assert.equal(updated.documentTemplateVersion, 1)
+  assert.equal(
+    calls.some((call) => call.url.endsWith('/v1/documents/deleted-doc:batchUpdate')),
+    false,
+    'missing Recipe Document should not be updated after the read fails'
+  )
+
+  const recordUpdate = calls.find(
+    (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
+  )
+  const savedRecord = multipartJsonContent(recordUpdate.options.body)
+  assert.equal(savedRecord.driveDocId, 'replacement-doc')
+  assert.equal(savedRecord.driveDocUrl, 'https://docs.google.com/document/d/replacement-doc/edit')
+  assert.equal(savedRecord.name, 'Lemon Pasta Rebuilt')
 })

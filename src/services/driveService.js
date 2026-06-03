@@ -269,7 +269,7 @@ async function getDocumentEndIndex(documentId) {
 
 export async function updateRecipeDoc(recipe) {
   const existingRecord = await readJsonFile(recipe.id)
-  const mergedRecord = buildRecipeRecord({
+  let mergedRecord = buildRecipeRecord({
     ...existingRecord,
     ...recipe,
     driveDocId: recipe.driveDocId || existingRecord.driveDocId,
@@ -279,7 +279,20 @@ export async function updateRecipeDoc(recipe) {
   })
 
   if (mergedRecord.driveDocId) {
-    await writeRecipeDocument(mergedRecord.driveDocId, { ...mergedRecord, id: recipe.id }, { replace: true })
+    try {
+      await writeRecipeDocument(mergedRecord.driveDocId, { ...mergedRecord, id: recipe.id }, { replace: true })
+    } catch {
+      const { documentFolderId } = await ensureRecipeFolders()
+      const document = await createGeneratedRecipeDocument(
+        { ...mergedRecord, id: recipe.id },
+        documentFolderId
+      )
+      mergedRecord = buildRecipeRecord(mergedRecord, {
+        driveDocId: document.id,
+        driveDocUrl: document.webViewLink,
+        documentTemplateVersion: RECIPE_DOCUMENT_TEMPLATE_VERSION,
+      })
+    }
   }
   await updateJsonFile(recipe.id, mergedRecord)
 

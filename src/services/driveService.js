@@ -355,6 +355,18 @@ export async function updateRecipeDoc(recipe) {
   return recipeFromRecord(mergedRecord, recipe.id)
 }
 
+// ─── Permissions ─────────────────────────────────────────────────────────────
+
+export async function grantViewerAccess(fileId, emailAddress) {
+  const res = await fetch(`${DRIVE_API}/files/${fileId}/permissions`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'reader', type: 'user', emailAddress }),
+  })
+  if (!res.ok) throw new Error(`Failed to grant viewer access: ${res.status}`)
+  return res.json()
+}
+
 // ─── Delete ──────────────────────────────────────────────────────────────────
 
 export async function deleteRecipeDoc(fileId) {

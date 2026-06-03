@@ -121,7 +121,7 @@ function LandingPage() {
             📖 My Cookbook
           </Typography>
           <Typography variant="h5" color="text.secondary" sx={{ mb: 4, fontWeight: 300 }}>
-            Create, store, and share your favourite recipes — beautifully formatted in Google Drive.
+            Create, store, and share your favourite recipes — saved to Google Drive.
           </Typography>
           <Button
             variant="contained"
@@ -135,7 +135,7 @@ function LandingPage() {
           <Grid container spacing={3} alignItems="stretch" sx={{ mt: 6 }}>
             {[
               { icon: '🔍', title: 'Smart Nutrition', body: 'Look up ingredients from the USDA database and get auto-calculated calories per portion.' },
-              { icon: '📄', title: 'Google Drive', body: 'Every recipe is saved as a beautifully formatted Google Doc in your Drive.' },
+              { icon: '📄', title: 'Google Drive', body: 'Each saved recipe creates a record and a formatted document in your Drive.' },
               { icon: '✉️', title: 'Share via Gmail', body: 'Send recipes to your contacts directly from your Gmail account.' },
             ].map((f) => (
               <Grid item xs={12} sm={4} key={f.title} sx={{ display: 'flex' }}>

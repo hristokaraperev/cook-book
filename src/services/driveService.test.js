@@ -516,3 +516,54 @@ test('updateRecipeDoc renames the Recipe Record and Recipe Document without chan
     'expected generated Recipe Document name to be updated'
   )
 })
+
+test('updateRecipeDoc stamps the Recipe Record with the current save time when saving edits', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-03T12:30:00.000Z') })
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  let savedRecord = null
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        updatedAt: '2026-06-03T10:00:00.000Z',
+        driveDocId: 'doc-789',
+        driveDocUrl: 'https://docs.google.com/document/d/doc-789/edit',
+        documentTemplateVersion: 1,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789') && parsed.searchParams.get('fields') === 'body(content(endIndex))') {
+      return jsonResponse({ body: { content: [{ endIndex: 1 }, { endIndex: 90 }] } })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      savedRecord = multipartJsonContent(options.body)
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`)
+  }
+
+  const updated = await updateRecipeDoc({
+    id: 'record-123',
+    ...sampleRecipe,
+    description: 'Saved later',
+    updatedAt: undefined,
+  })
+
+  assert.equal(updated.updatedAt, '2026-06-03T12:30:00.000Z')
+  assert.equal(savedRecord.updatedAt, '2026-06-03T12:30:00.000Z')
+})

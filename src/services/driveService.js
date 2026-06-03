@@ -283,6 +283,8 @@ export async function updateRecipeDoc(recipe) {
   let mergedRecord = buildRecipeRecord({
     ...existingRecord,
     ...recipe,
+    createdAt: recipe.createdAt || existingRecord.createdAt,
+    updatedAt: recipe.updatedAt || new Date().toISOString(),
     driveDocId: recipe.driveDocId || existingRecord.driveDocId,
     driveDocUrl: recipe.driveDocUrl || existingRecord.driveDocUrl,
     documentTemplateVersion:

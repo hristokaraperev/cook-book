@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Container, Box, Typography, TextField, Button, Paper, Stack,
-  Alert, CircularProgress, Autocomplete, Chip, Divider, IconButton,
+  Alert, CircularProgress, Autocomplete, Chip, Divider, IconButton, List, ListItem, ListItemText,
 } from '@mui/material'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import SendIcon from '@mui/icons-material/Send'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline'
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import { useRecipeStore } from '../store/recipeStore'
 import { sendRecipeEmail } from '../services/gmailService'
+import { grantViewerAccess } from '../services/driveService'
 import { getRecipeDocumentStatus, isIncompleteSave } from '../services/recipeStatus'
 import ContactPicker from '../components/ContactPicker'
 
@@ -25,7 +27,7 @@ export default function SendRecipePage() {
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
-  const [sent, setSent] = useState(false)
+  const [sendResult, setSendResult] = useState(null)
   const selectedRecipeBlocked = selectedRecipe ? isIncompleteSave(selectedRecipe) : false
   const selectedRecipeStatus = selectedRecipe ? getRecipeDocumentStatus(selectedRecipe) : null
 
@@ -39,33 +41,70 @@ export default function SendRecipePage() {
   const handleSend = async () => {
     if (!selectedRecipe) { setError('Please select a recipe.'); return }
     if (selectedRecipeBlocked) { setError('Please complete the Recipe Document before sharing this recipe.'); return }
+    if (!selectedRecipe.driveDocId) { setError('This recipe has no generated Recipe Document and cannot be shared.'); return }
     if (recipients.length === 0) { setError('Please select at least one recipient.'); return }
 
     setError(null)
     setSending(true)
-    try {
-      for (const contact of recipients) {
+
+    const succeeded = []
+    const failed = []
+
+    for (const contact of recipients) {
+      try {
+        await grantViewerAccess(selectedRecipe.driveDocId, contact.email)
         await sendRecipeEmail(contact.email, selectedRecipe, message, selectedRecipe.driveDocUrl)
+        succeeded.push(contact)
+      } catch (e) {
+        failed.push({ contact, reason: e.message })
       }
-      setSent(true)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSending(false)
     }
+
+    setSending(false)
+    setSendResult({ succeeded, failed })
   }
 
-  if (sent) {
+  if (sendResult) {
+    const allFailed = sendResult.succeeded.length === 0
+    const someFailed = sendResult.failed.length > 0
+
     return (
       <Container maxWidth="sm" sx={{ py: 8, textAlign: 'center' }}>
-        <CheckCircleIcon sx={{ fontSize: 80, color: 'success.main', mb: 2 }} />
-        <Typography variant="h4" gutterBottom>Recipe Sent!</Typography>
-        <Typography color="text.secondary" sx={{ mb: 4 }}>
-          <strong>{selectedRecipe?.name}</strong> was sent to{' '}
-          {recipients.map((r) => r.name).join(', ')}.
+        {allFailed ? (
+          <ErrorOutlineIcon sx={{ fontSize: 80, color: 'error.main', mb: 2 }} />
+        ) : (
+          <CheckCircleIcon sx={{ fontSize: 80, color: 'success.main', mb: 2 }} />
+        )}
+
+        <Typography variant="h4" gutterBottom>
+          {allFailed ? 'Recipe Not Sent' : 'Recipe Sent!'}
         </Typography>
+
+        {sendResult.succeeded.length > 0 && (
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            <strong>{selectedRecipe?.name}</strong> was sent to{' '}
+            {sendResult.succeeded.map((r) => r.name).join(', ')}.
+          </Typography>
+        )}
+
+        {someFailed && (
+          <Alert severity="error" sx={{ mb: 3, textAlign: 'left' }}>
+            <Typography variant="subtitle2" gutterBottom>Could not send to:</Typography>
+            <List dense disablePadding>
+              {sendResult.failed.map(({ contact, reason }) => (
+                <ListItem key={contact.email} disableGutters>
+                  <ListItemText
+                    primary={`${contact.name} (${contact.email})`}
+                    secondary={reason}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          </Alert>
+        )}
+
         <Stack direction="row" spacing={2} justifyContent="center">
-          <Button variant="outlined" onClick={() => { setSent(false); setRecipients([]); setMessage('') }}>
+          <Button variant="outlined" onClick={() => { setSendResult(null); setRecipients([]); setMessage('') }}>
             Send another
           </Button>
           <Button variant="contained" onClick={() => navigate('/')}>
@@ -172,8 +211,8 @@ export default function SendRecipePage() {
               {recipients.map((r) => <Chip key={r.email} label={r.name} size="small" sx={{ mx: 0.3 }} />)}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              The email will include the full ingredient list, calorie breakdown, and instructions.
-              {selectedRecipe.driveDocUrl && ' A link to the formatted document will also be included.'}
+              Each recipient will be granted viewer access to the Recipe Document before receiving the email.
+              The email will include the full ingredient list, calorie breakdown, instructions, and a link to the formatted document.
             </Typography>
           </Paper>
         )}

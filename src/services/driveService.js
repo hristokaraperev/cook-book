@@ -296,10 +296,11 @@ export async function deleteRecipeDoc(fileId) {
     record = null
   }
 
+  await deleteDriveFile(fileId)
+
   if (record?.driveDocId) {
     await deleteDriveFile(record.driveDocId)
   }
-  await deleteDriveFile(fileId)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

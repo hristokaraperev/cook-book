@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createRecipeDoc, listRecipes } from './driveService.js'
+import { createRecipeDoc, listRecipes, deleteRecipeDoc } from './driveService.js'
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
 
@@ -267,4 +267,35 @@ test('createRecipeDoc allows duplicate recipe names by using disambiguated recor
   assert.match(recordNames[0], /^lemon-pasta-.+\.json$/)
   assert.match(recordNames[1], /^lemon-pasta-.+\.json$/)
   assert.notEqual(recordNames[0], recordNames[1])
+})
+
+test('deleteRecipeDoc deletes the Recipe Record before the generated Recipe Document', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+
+  const deletedIds = []
+  t.after(() => { globalThis.fetch = undefined })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-1') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({ name: 'Lemon Pasta', driveDocId: 'doc-1', recordSchemaVersion: 1 })
+    }
+
+    if (options.method === 'DELETE' && parsed.pathname.endsWith('/drive/v3/files/record-1')) {
+      deletedIds.push('record-1')
+      return { ok: true, status: 204, json: async () => ({}), text: async () => '' }
+    }
+
+    if (options.method === 'DELETE' && parsed.pathname.endsWith('/drive/v3/files/doc-1')) {
+      deletedIds.push('doc-1')
+      return { ok: true, status: 204, json: async () => ({}), text: async () => '' }
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`)
+  }
+
+  await deleteRecipeDoc('record-1')
+
+  assert.deepEqual(deletedIds, ['record-1', 'doc-1'], 'Recipe Record must be deleted before the generated Recipe Document')
 })

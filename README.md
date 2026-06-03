@@ -6,8 +6,8 @@ A single-page application for creating, storing, and sharing recipes — powered
 
 - **Recipe management** — create and edit recipes with ingredients, instructions, prep/cook times, and serving sizes
 - **USDA nutrition data** — search the USDA FoodData Central database to auto-calculate calories per ingredient and per serving
-- **Google Drive storage** — every recipe is saved as a beautifully formatted Google Doc in a dedicated *My Cookbook* folder in your Drive
-- **Gmail sharing** — send recipes to your Google Contacts directly from the app; the email includes the full ingredient list, calorie breakdown, and a link to the Drive doc
+- **Google Drive storage** — each saved recipe creates a machine-readable Recipe Record in `Cookbook/.data` and a formatted Recipe Document in `Cookbook/Recipes`
+- **Gmail sharing** — send recipes to your Google Contacts directly from the app; the email includes the full ingredient list, calorie breakdown, and a link to the formatted document
 - **Contacts integration** — pick recipients from your Google Contacts using the People API
 
 ## Tech Stack

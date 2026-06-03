@@ -151,7 +151,7 @@ export default function SendRecipePage() {
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               The email will include the full ingredient list, calorie breakdown, and instructions.
-              {selectedRecipe.driveDocUrl && ' A link to the Google Doc will also be included.'}
+              {selectedRecipe.driveDocUrl && ' A link to the formatted document will also be included.'}
             </Typography>
           </Paper>
         )}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Box, Container, Grid, Typography, TextField, Chip, Stack, Fab,
   CircularProgress, Alert, Button, Paper, InputAdornment,
@@ -18,10 +18,12 @@ const CATEGORIES = ['All', 'Breakfast', 'Lunch', 'Dinner', 'Dessert', 'Snack', '
 
 export default function HomePage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { isSignedIn } = useAuthStore()
   const { recipes, loading, error, setRecipes, setLoading, setError } = useRecipeStore()
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
+  const cleanupWarning = location.state?.cleanupWarning || null
 
   useEffect(() => {
     if (isSignedIn) fetchRecipes()
@@ -75,6 +77,10 @@ export default function HomePage() {
           ))}
         </Stack>
       </Box>
+
+      {cleanupWarning && (
+        <Alert severity="warning" sx={{ mb: 3 }}>{cleanupWarning}</Alert>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} action={

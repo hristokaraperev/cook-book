@@ -50,9 +50,13 @@ export default function RecipeDetailPage() {
     setDeleting(true)
     setDeleteError(null)
     try {
-      await deleteRecipeDoc(recipe.id)
+      const result = await deleteRecipeDoc(recipe.id)
       removeRecipe(recipe.id)
-      navigate('/')
+      if (result?.cleanupFailed) {
+        navigate('/', { state: { cleanupWarning: `"${recipe.name}" was deleted, but its Google Drive document could not be removed and may need manual cleanup.` } })
+      } else {
+        navigate('/')
+      }
     } catch (e) {
       setDeleteError(e.message)
       setDeleting(false)
@@ -214,7 +218,7 @@ export default function RecipeDetailPage() {
         <DialogTitle>Delete recipe?</DialogTitle>
         <DialogContent>
           <Typography>
-            <strong>{recipe.name}</strong> will be permanently deleted from Google Drive.
+            <strong>{recipe.name}</strong> will be permanently deleted, including its saved record and generated document.
           </Typography>
           {deleteError && <Alert severity="error" sx={{ mt: 2 }}>{deleteError}</Alert>}
         </DialogContent>

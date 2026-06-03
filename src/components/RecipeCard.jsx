@@ -5,6 +5,9 @@ import {
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment'
 import PeopleIcon from '@mui/icons-material/People'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
+import { Tooltip } from '@mui/material'
+import { getRecipeDocumentStatus } from '../services/recipeStatus'
 
 const CATEGORY_EMOJI = {
   Breakfast: '🍳',
@@ -29,6 +32,8 @@ export default function RecipeCard({ recipe }) {
   const totalTime = (recipe.prepTime || 0) + (recipe.cookTime || 0)
   const emoji = CATEGORY_EMOJI[recipe.category] || '🍴'
   const color = CATEGORY_COLOR[recipe.category] || '#546E7A'
+  const documentStatus = getRecipeDocumentStatus(recipe)
+  const showDocumentWarning = documentStatus.status !== 'ready'
 
   return (
     <Card
@@ -58,11 +63,24 @@ export default function RecipeCard({ recipe }) {
           {emoji}
         </Box>
         <CardContent sx={{ flexGrow: 1 }}>
-          <Chip
-            label={recipe.category || 'Other'}
-            size="small"
-            sx={{ mb: 1, backgroundColor: `${color}22`, color, fontWeight: 600 }}
-          />
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+            <Chip
+              label={recipe.category || 'Other'}
+              size="small"
+              sx={{ backgroundColor: `${color}22`, color, fontWeight: 600 }}
+            />
+            {showDocumentWarning && (
+              <Tooltip title={documentStatus.message}>
+                <Chip
+                  icon={<WarningAmberIcon />}
+                  label={documentStatus.label}
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                />
+              </Tooltip>
+            )}
+          </Stack>
           <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, lineHeight: 1.3 }}>
             {recipe.name}
           </Typography>

@@ -1,4 +1,4 @@
-import { useAuthStore } from '../store/authStore'
+import { useAuthStore } from '../store/authStore.js'
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',

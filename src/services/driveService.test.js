@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createRecipeDoc, listRecipes, updateRecipeDoc, deleteRecipeDoc } from './driveService.js'
+import {
+  IncompleteSaveError,
+  createRecipeDoc,
+  deleteRecipeDoc,
+  listRecipes,
+  updateRecipeDoc,
+} from './driveService.js'
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
 
@@ -131,6 +137,67 @@ test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Docum
     calls.some((call) => String(call.options.body).includes('Content-Type: text/html')),
     false,
     'generated Recipe Documents must not be created via HTML upload conversion'
+  )
+})
+
+test('createRecipeDoc reports an Incomplete Save when the Record is persisted but the Document is not', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  const calls = []
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options }
+    calls.push(request)
+    const parsed = new URL(request.url)
+    const q = parsed.searchParams.get('q') || ''
+    const contentType = options.headers?.['Content-Type'] || ''
+    const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
+
+    if (q.includes("name='Cookbook'")) {
+      return jsonResponse({ files: [{ id: 'cookbook-folder' }] })
+    }
+
+    if (q.includes("name='.data'")) {
+      return jsonResponse({ files: [{ id: 'record-folder' }] })
+    }
+
+    if (q.includes("name='Recipes'")) {
+      return jsonResponse({ files: [{ id: 'document-folder' }] })
+    }
+
+    if (options.method === 'POST' && parsed.pathname.endsWith('/upload/drive/v3/files')) {
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents')) {
+      assert.equal(body.title, 'Lemon Pasta')
+      return jsonResponse({ error: 'quota exceeded' }, { ok: false, status: 429 })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${request.url}`)
+  }
+
+  await assert.rejects(
+    () => createRecipeDoc(sampleRecipe),
+    (error) => {
+      assert.ok(error instanceof IncompleteSaveError)
+      assert.equal(error.recipe.id, 'record-123')
+      assert.equal(error.recipe.name, 'Lemon Pasta')
+      assert.equal(error.recipe.driveDocId, null)
+      assert.equal(error.recipe.driveDocUrl, null)
+      assert.match(error.message, /Incomplete Save/)
+      return true
+    }
+  )
+
+  assert.equal(
+    calls.some((call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')),
+    false,
+    'incomplete create must not persist a successful generated-document reference'
   )
 })
 
@@ -505,6 +572,143 @@ test('updateRecipeDoc recreates a missing Recipe Document and patches the Recipe
   assert.equal(savedRecord.driveDocId, 'replacement-doc')
   assert.equal(savedRecord.driveDocUrl, 'https://docs.google.com/document/d/replacement-doc/edit')
   assert.equal(savedRecord.name, 'Lemon Pasta Rebuilt')
+})
+
+test('updateRecipeDoc completes an Incomplete Save by generating a missing Recipe Document', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  const calls = []
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options }
+    calls.push(request)
+    const parsed = new URL(request.url)
+    const q = parsed.searchParams.get('q') || ''
+    const contentType = options.headers?.['Content-Type'] || ''
+    const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        driveDocId: null,
+        driveDocUrl: null,
+        documentTemplateVersion: 1,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (q.includes("name='Cookbook'")) {
+      return jsonResponse({ files: [{ id: 'cookbook-folder' }] })
+    }
+
+    if (q.includes("name='.data'")) {
+      return jsonResponse({ files: [{ id: 'record-folder' }] })
+    }
+
+    if (q.includes("name='Recipes'")) {
+      return jsonResponse({ files: [{ id: 'document-folder' }] })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents')) {
+      assert.equal(body.title, 'Lemon Pasta Finished')
+      return jsonResponse({ documentId: 'doc-finished', title: 'Lemon Pasta Finished' })
+    }
+
+    if (options.method !== 'PATCH' && parsed.pathname.endsWith('/drive/v3/files/doc-finished')) {
+      return jsonResponse({ parents: ['root'], webViewLink: 'https://docs.google.com/document/d/doc-finished/edit' })
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/drive/v3/files/doc-finished')) {
+      return jsonResponse({ id: 'doc-finished', webViewLink: 'https://docs.google.com/document/d/doc-finished/edit' })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-finished:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${request.url}`)
+  }
+
+  const updated = await updateRecipeDoc({
+    id: 'record-123',
+    ...sampleRecipe,
+    name: 'Lemon Pasta Finished',
+    updatedAt: '2026-06-03T13:00:00.000Z',
+  })
+
+  assert.equal(updated.id, 'record-123')
+  assert.equal(updated.driveDocId, 'doc-finished')
+  assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/doc-finished/edit')
+
+  const savedRecord = multipartJsonContent(
+    calls.find((call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')).options.body
+  )
+  assert.equal(savedRecord.name, 'Lemon Pasta Finished')
+  assert.equal(savedRecord.driveDocId, 'doc-finished')
+  assert.equal(savedRecord.driveDocUrl, 'https://docs.google.com/document/d/doc-finished/edit')
+})
+
+test('updateRecipeDoc reports an Incomplete Save when the Document is updated but the Record patch fails', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        driveDocId: 'doc-789',
+        driveDocUrl: 'https://docs.google.com/document/d/doc-789/edit',
+        documentTemplateVersion: 1,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789') && parsed.searchParams.get('fields') === 'body(content(endIndex))') {
+      return jsonResponse({ body: { content: [{ endIndex: 1 }, { endIndex: 120 }] } })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      return jsonResponse({ error: 'temporary Drive failure' }, { ok: false, status: 503 })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`)
+  }
+
+  await assert.rejects(
+    () => updateRecipeDoc({
+      id: 'record-123',
+      ...sampleRecipe,
+      description: 'Saved in the document only',
+      updatedAt: '2026-06-03T13:30:00.000Z',
+    }),
+    (error) => {
+      assert.ok(error instanceof IncompleteSaveError)
+      assert.equal(error.recipe.id, 'record-123')
+      assert.equal(error.recipe.description, 'Saved in the document only')
+      assert.equal(error.recipe.driveDocId, 'doc-789')
+      assert.equal(error.recipe.driveDocUrl, 'https://docs.google.com/document/d/doc-789/edit')
+      assert.match(error.message, /Incomplete Save/)
+      return true
+    }
+  )
 })
 
 test('updateRecipeDoc renames the Recipe Record and Recipe Document without changing Recipe Identity', async (t) => {

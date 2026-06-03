@@ -4,6 +4,7 @@ import {
   IncompleteSaveError,
   createRecipeDoc,
   deleteRecipeDoc,
+  grantViewerAccess,
   listRecipes,
   updateRecipeDoc,
 } from './driveService.js'
@@ -889,4 +890,46 @@ test('updateRecipeDoc advances old Recipe Document template versions after regen
   )
   const savedRecord = multipartJsonContent(recordUpdate.options.body)
   assert.equal(savedRecord.documentTemplateVersion, 1)
+})
+
+test('grantViewerAccess grants explicit viewer access by email on the Drive file', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+
+  let permissionCall = null
+  t.after(() => { globalThis.fetch = undefined })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+    if (options.method === 'POST' && parsed.pathname.endsWith('/drive/v3/files/doc-123/permissions')) {
+      permissionCall = { url: String(url), body: JSON.parse(options.body) }
+      return { ok: true, status: 200, json: async () => ({ id: 'perm-1', role: 'reader' }) }
+    }
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`)
+  }
+
+  await grantViewerAccess('doc-123', 'chef@example.com')
+
+  assert.ok(permissionCall, 'expected a POST to the Drive Permissions API')
+  assert.equal(permissionCall.body.role, 'reader')
+  assert.equal(permissionCall.body.type, 'user', 'must grant user-specific access, not broad link access')
+  assert.equal(permissionCall.body.emailAddress, 'chef@example.com')
+})
+
+test('grantViewerAccess throws when the Drive Permissions API returns an error', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+
+  t.after(() => { globalThis.fetch = undefined })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+    if (options.method === 'POST' && parsed.pathname.endsWith('/drive/v3/files/doc-123/permissions')) {
+      return { ok: false, status: 403, json: async () => ({ error: { message: 'Forbidden' } }) }
+    }
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`)
+  }
+
+  await assert.rejects(
+    () => grantViewerAccess('doc-123', 'chef@example.com'),
+    /Failed to grant viewer access/
+  )
 })

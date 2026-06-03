@@ -22,10 +22,11 @@ function multipartMetadata(body) {
 
 function multipartJsonContent(body) {
   const parts = String(body).split('--cookbook_boundary_789')
-  const contentPart = parts.find((part) => part.includes('Content-Type: application/json; charset=UTF-8') && !part.trim().startsWith('Content-Type: application/json; charset=UTF-8\r\n\r\n{}'))
-  if (!contentPart) return null
-  const json = contentPart.split('\r\n\r\n').at(1)?.trim()
-  return json ? JSON.parse(json) : null
+  const jsonParts = parts
+    .filter((part) => part.includes('Content-Type: application/json; charset=UTF-8'))
+    .map((part) => part.split('\r\n\r\n').at(1)?.trim())
+    .filter(Boolean)
+  return jsonParts.length ? JSON.parse(jsonParts.at(-1)) : null
 }
 
 const sampleRecipe = {
@@ -320,14 +321,14 @@ test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Do
   const updated = await updateRecipeDoc({
     id: 'record-123',
     ...sampleRecipe,
-    name: 'Lemon Pasta with Basil',
+    name: 'Lemon Pasta',
     description: 'Brighter pasta with herbs',
     instructions: ['Boil pasta', 'Toss with lemon and basil'],
     updatedAt: '2026-06-03T11:00:00.000Z',
   })
 
   assert.equal(updated.id, 'record-123')
-  assert.equal(updated.name, 'Lemon Pasta with Basil')
+  assert.equal(updated.name, 'Lemon Pasta')
   assert.equal(updated.driveDocId, 'doc-789')
   assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/doc-789/edit')
 
@@ -341,7 +342,7 @@ test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Do
       range: { startIndex: 1, endIndex: 119 },
     },
   })
-  assert.match(documentRequests[1].insertText.text, /^Lemon Pasta with Basil\n/)
+  assert.match(documentRequests[1].insertText.text, /^Lemon Pasta\n/)
   assert.match(documentRequests[1].insertText.text, /Toss with lemon and basil/)
 
   const recordUpdate = calls.find(
@@ -349,7 +350,7 @@ test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Do
   )
   assert.ok(recordUpdate, 'expected Recipe Record to be saved')
   const savedRecord = multipartJsonContent(recordUpdate.options.body)
-  assert.equal(savedRecord.name, 'Lemon Pasta with Basil')
+  assert.equal(savedRecord.name, 'Lemon Pasta')
   assert.equal(savedRecord.updatedAt, '2026-06-03T11:00:00.000Z')
   assert.equal(savedRecord.driveDocId, 'doc-789')
 })
@@ -445,4 +446,73 @@ test('updateRecipeDoc recreates a missing Recipe Document and patches the Recipe
   assert.equal(savedRecord.driveDocId, 'replacement-doc')
   assert.equal(savedRecord.driveDocUrl, 'https://docs.google.com/document/d/replacement-doc/edit')
   assert.equal(savedRecord.name, 'Lemon Pasta Rebuilt')
+})
+
+test('updateRecipeDoc renames the Recipe Record and Recipe Document without changing Recipe Identity', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  const calls = []
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options }
+    calls.push(request)
+    const parsed = new URL(request.url)
+    const contentType = options.headers?.['Content-Type'] || ''
+    const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        name: 'Lemon Pasta',
+        driveDocId: 'doc-789',
+        driveDocUrl: 'https://docs.google.com/document/d/doc-789/edit',
+        documentTemplateVersion: 1,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789') && parsed.searchParams.get('fields') === 'body(content(endIndex))') {
+      return jsonResponse({ body: { content: [{ endIndex: 1 }, { endIndex: 88 }] } })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/drive/v3/files/doc-789')) {
+      assert.deepEqual(body, { name: 'Lemon Pasta Primavera' })
+      return jsonResponse({ id: 'doc-789', name: 'Lemon Pasta Primavera' })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${request.url}`)
+  }
+
+  const updated = await updateRecipeDoc({
+    id: 'record-123',
+    ...sampleRecipe,
+    name: 'Lemon Pasta Primavera',
+    updatedAt: '2026-06-03T12:00:00.000Z',
+  })
+
+  assert.equal(updated.id, 'record-123')
+  assert.equal(updated.driveDocId, 'doc-789')
+
+  const recordUpdate = calls.find(
+    (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
+  )
+  const recordMetadata = multipartMetadata(recordUpdate.options.body)
+  assert.match(recordMetadata.name, /^lemon-pasta-primavera-.+\.json$/)
+
+  assert.ok(
+    calls.some((call) => call.options.method === 'PATCH' && call.url.endsWith('/drive/v3/files/doc-789')),
+    'expected generated Recipe Document name to be updated'
+  )
 })

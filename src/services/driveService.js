@@ -160,8 +160,8 @@ async function createJsonFile(name, data, parentId) {
   return res.json()
 }
 
-async function updateJsonFile(fileId, data) {
-  const body = buildMultipartBody({}, JSON.stringify(data, null, 2), RECORD_MIME_TYPE)
+async function updateJsonFile(fileId, data, metadata = {}) {
+  const body = buildMultipartBody(metadata, JSON.stringify(data, null, 2), RECORD_MIME_TYPE)
   const res = await fetch(`${DRIVE_UPLOAD}/files/${fileId}?uploadType=multipart`, {
     method: 'PATCH',
     headers: {
@@ -227,6 +227,16 @@ async function moveFileToFolder(fileId, folderId, currentParents) {
   return res.json()
 }
 
+async function updateDriveFileMetadata(fileId, metadata) {
+  const res = await fetch(`${DRIVE_API}/files/${fileId}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(metadata),
+  })
+  if (!res.ok) throw new Error(`Failed to update file metadata: ${res.status}`)
+  return res.json()
+}
+
 async function writeRecipeDocument(documentId, recipe, options = {}) {
   const requests = []
   if (options.replace) {
@@ -269,6 +279,7 @@ async function getDocumentEndIndex(documentId) {
 
 export async function updateRecipeDoc(recipe) {
   const existingRecord = await readJsonFile(recipe.id)
+  const isRename = Boolean(recipe.name && recipe.name !== existingRecord.name)
   let mergedRecord = buildRecipeRecord({
     ...existingRecord,
     ...recipe,
@@ -293,8 +304,13 @@ export async function updateRecipeDoc(recipe) {
         documentTemplateVersion: RECIPE_DOCUMENT_TEMPLATE_VERSION,
       })
     }
+    if (isRename) {
+      await updateDriveFileMetadata(mergedRecord.driveDocId, { name: mergedRecord.name })
+    }
   }
-  await updateJsonFile(recipe.id, mergedRecord)
+
+  const recordMetadata = isRename ? { name: buildRecordFileName(mergedRecord.name) } : {}
+  await updateJsonFile(recipe.id, mergedRecord, recordMetadata)
 
   return recipeFromRecord(mergedRecord, recipe.id)
 }

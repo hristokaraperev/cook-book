@@ -20,8 +20,8 @@ In the Cloud Console, go to **APIs & Services → Library** and enable all four:
 
 | API | What it's used for |
 |-----|-------------------|
-| **Google Drive API** | Saving recipes as Google Docs in your Drive |
-| **Google Docs API** | Formatting recipe documents |
+| **Google Drive API** | Saving Recipe Records (`Cookbook/.data`) and Recipe Documents (`Cookbook/Recipes`) |
+| **Google Docs API** | Generating formatted Recipe Documents from saved records |
 | **Gmail API** | Sending recipes via email |
 | **People API** | Reading your Google Contacts for the recipient picker |
 

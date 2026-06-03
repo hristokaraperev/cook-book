@@ -97,6 +97,7 @@ export default function CreateEditRecipePage() {
     if (!form.name.trim()) { setError('Recipe name is required.'); return }
     const cleanIngredients = ingredients.filter((i) => i.name.trim())
     const cleanInstructions = instructions.filter((s) => s.trim())
+    if (cleanIngredients.length === 0) { setError('Add at least one ingredient.'); return }
     if (cleanInstructions.length === 0) { setError('Add at least one instruction step.'); return }
 
     setError(null)

@@ -299,3 +299,31 @@ test('deleteRecipeDoc deletes the Recipe Record before the generated Recipe Docu
 
   assert.deepEqual(deletedIds, ['record-1', 'doc-1'], 'Recipe Record must be deleted before the generated Recipe Document')
 })
+
+test('deleteRecipeDoc returns cleanupFailed when Recipe Document deletion fails after Record deletion', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+
+  t.after(() => { globalThis.fetch = undefined })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-1') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({ name: 'Lemon Pasta', driveDocId: 'doc-1', recordSchemaVersion: 1 })
+    }
+
+    if (options.method === 'DELETE' && parsed.pathname.endsWith('/drive/v3/files/record-1')) {
+      return { ok: true, status: 204, json: async () => ({}), text: async () => '' }
+    }
+
+    if (options.method === 'DELETE' && parsed.pathname.endsWith('/drive/v3/files/doc-1')) {
+      return { ok: false, status: 403, json: async () => ({}), text: async () => 'Forbidden' }
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`)
+  }
+
+  const result = await deleteRecipeDoc('record-1')
+
+  assert.deepEqual(result, { cleanupFailed: true }, 'should report cleanup failure rather than throwing when Document deletion fails after Record deletion')
+})

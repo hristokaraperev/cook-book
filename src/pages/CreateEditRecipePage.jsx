@@ -10,7 +10,8 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import SaveIcon from '@mui/icons-material/Save'
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment'
 import { useRecipeStore } from '../store/recipeStore'
-import { createRecipeDoc, updateRecipeDoc } from '../services/driveService'
+import { IncompleteSaveError, createRecipeDoc, updateRecipeDoc } from '../services/driveService'
+import { getRecipeDocumentStatus, isIncompleteSave } from '../services/recipeStatus'
 import IngredientRow from '../components/IngredientRow'
 
 const CATEGORIES = ['Breakfast', 'Lunch', 'Dinner', 'Dessert', 'Snack', 'Other']
@@ -45,6 +46,7 @@ export default function CreateEditRecipePage() {
   const [instructions, setInstructions] = useState([''])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const [incompleteSave, setIncompleteSave] = useState(null)
 
   useEffect(() => {
     if (isEdit) {
@@ -64,9 +66,12 @@ export default function CreateEditRecipePage() {
             : [emptyIngredient()]
         )
         setInstructions(recipe.instructions?.length ? recipe.instructions : [''])
+        setIncompleteSave(isIncompleteSave(recipe) ? recipe : null)
       } else {
         navigate('/', { replace: true })
       }
+    } else {
+      setIncompleteSave(null)
     }
   }, [id])
 
@@ -102,6 +107,7 @@ export default function CreateEditRecipePage() {
     setError(null)
     setSaving(true)
     try {
+      const retryRecordId = isEdit ? id : incompleteSave?.id
       const recipe = {
         ...form,
         servings: Number(form.servings) || 1,
@@ -115,21 +121,37 @@ export default function CreateEditRecipePage() {
         createdAt: isEdit ? undefined : new Date().toISOString(),
       }
 
-      if (isEdit) {
-        const updated = await updateRecipeDoc({ ...recipe, id })
-        updateRecipeById(id, updated)
-        navigate(`/recipe/${id}`)
+      if (retryRecordId) {
+        const updated = await updateRecipeDoc({
+          ...recipe,
+          id: retryRecordId,
+          createdAt: isEdit ? undefined : incompleteSave?.createdAt,
+        })
+        if (isEdit) {
+          updateRecipeById(retryRecordId, updated)
+        } else {
+          addRecipe(updated)
+        }
+        setIncompleteSave(null)
+        navigate(`/recipe/${retryRecordId}`)
       } else {
         const created = await createRecipeDoc(recipe)
         addRecipe(created)
         navigate(`/recipe/${created.id}`)
       }
     } catch (e) {
-      setError(e.message)
+      if (e instanceof IncompleteSaveError) {
+        setIncompleteSave(e.recipe)
+        setError(null)
+      } else {
+        setError(e.message)
+      }
     } finally {
       setSaving(false)
     }
   }
+
+  const incompleteStatus = incompleteSave ? getRecipeDocumentStatus(incompleteSave) : null
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
@@ -148,6 +170,21 @@ export default function CreateEditRecipePage() {
           {saving ? 'Saving…' : 'Save to Drive'}
         </Button>
       </Box>
+
+      {incompleteStatus && incompleteStatus.status !== 'ready' && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 3 }}
+          action={
+            <Button color="inherit" size="small" onClick={handleSave} disabled={saving}>
+              Retry
+            </Button>
+          }
+        >
+          <Typography variant="subtitle2">{incompleteStatus.label}</Typography>
+          <Typography variant="body2">{incompleteStatus.message}</Typography>
+        </Alert>
+      )}
 
       {error && <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>{error}</Alert>}
 

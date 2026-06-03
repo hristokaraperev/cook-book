@@ -8,8 +8,10 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import SendIcon from '@mui/icons-material/Send'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import { useRecipeStore } from '../store/recipeStore'
 import { sendRecipeEmail } from '../services/gmailService'
+import { getRecipeDocumentStatus, isIncompleteSave } from '../services/recipeStatus'
 import ContactPicker from '../components/ContactPicker'
 
 export default function SendRecipePage() {
@@ -24,6 +26,8 @@ export default function SendRecipePage() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
   const [sent, setSent] = useState(false)
+  const selectedRecipeBlocked = selectedRecipe ? isIncompleteSave(selectedRecipe) : false
+  const selectedRecipeStatus = selectedRecipe ? getRecipeDocumentStatus(selectedRecipe) : null
 
   useEffect(() => {
     if (preselectedId) {
@@ -34,6 +38,7 @@ export default function SendRecipePage() {
 
   const handleSend = async () => {
     if (!selectedRecipe) { setError('Please select a recipe.'); return }
+    if (selectedRecipeBlocked) { setError('Please complete the Recipe Document before sharing this recipe.'); return }
     if (recipients.length === 0) { setError('Please select at least one recipient.'); return }
 
     setError(null)
@@ -86,6 +91,7 @@ export default function SendRecipePage() {
           <Autocomplete
             options={recipes}
             getOptionLabel={(r) => r.name || ''}
+            getOptionDisabled={(r) => isIncompleteSave(r)}
             value={selectedRecipe}
             onChange={(_, val) => setSelectedRecipe(val)}
             renderInput={(params) => (
@@ -105,10 +111,26 @@ export default function SendRecipePage() {
                     color="primary"
                     variant="outlined"
                   />
+                  {isIncompleteSave(option) && (
+                    <Chip
+                      icon={<WarningAmberIcon />}
+                      label={getRecipeDocumentStatus(option).label}
+                      size="small"
+                      color="warning"
+                      variant="outlined"
+                    />
+                  )}
                 </Box>
               </li>
             )}
           />
+
+          {selectedRecipeBlocked && (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              <Typography variant="subtitle2">{selectedRecipeStatus.label}</Typography>
+              <Typography variant="body2">{selectedRecipeStatus.message}</Typography>
+            </Alert>
+          )}
 
           {selectedRecipe && (
             <Box sx={{ mt: 2, p: 2, background: '#FFF3E0', borderRadius: 2 }}>
@@ -142,7 +164,7 @@ export default function SendRecipePage() {
           />
         </Paper>
 
-        {selectedRecipe && recipients.length > 0 && (
+        {selectedRecipe && !selectedRecipeBlocked && recipients.length > 0 && (
           <Paper elevation={0} sx={{ p: 3, border: '1px solid #FF8F00', background: '#FFFDE7' }}>
             <Typography variant="subtitle2" fontWeight={600} gutterBottom>Preview</Typography>
             <Typography variant="body2">
@@ -161,7 +183,7 @@ export default function SendRecipePage() {
           size="large"
           startIcon={sending ? <CircularProgress size={18} color="inherit" /> : <SendIcon />}
           onClick={handleSend}
-          disabled={sending || !selectedRecipe || recipients.length === 0}
+          disabled={sending || !selectedRecipe || selectedRecipeBlocked || recipients.length === 0}
           fullWidth
         >
           {sending

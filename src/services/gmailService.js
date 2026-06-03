@@ -1,8 +1,13 @@
-import { authFetch } from './googleAuth'
+import { authFetch } from './googleAuth.js'
+import { isIncompleteSave } from './recipeStatus.js'
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1'
 
 export async function sendRecipeEmail(to, recipe, message, driveDocUrl) {
+  if (isIncompleteSave({ ...recipe, driveDocUrl: driveDocUrl || recipe.driveDocUrl })) {
+    throw new Error('Please complete the Recipe Document before sharing this recipe.')
+  }
+
   const subject = `Recipe: ${recipe.name}`
   const html = buildEmailHtml(recipe, message, driveDocUrl)
   const raw = buildRawEmail(to, subject, html)

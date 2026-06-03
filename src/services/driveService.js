@@ -1,5 +1,6 @@
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
+import { CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION } from './recipeStatus.js'
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3'
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3'
@@ -10,8 +11,17 @@ const DOCUMENTS_FOLDER_NAME = 'Recipes'
 const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder'
 const RECORD_MIME_TYPE = 'application/json'
 const RECIPE_RECORD_SCHEMA_VERSION = 1
-const RECIPE_DOCUMENT_TEMPLATE_VERSION = 1
+const RECIPE_DOCUMENT_TEMPLATE_VERSION = CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION
 const BOUNDARY = 'cookbook_boundary_789'
+
+export class IncompleteSaveError extends Error {
+  constructor(message, recipe, cause) {
+    super(message)
+    this.name = 'IncompleteSaveError'
+    this.recipe = recipe
+    this.cause = cause
+  }
+}
 
 function authHeaders() {
   const { accessToken } = useAuthStore.getState()
@@ -124,15 +134,24 @@ export async function createRecipeDoc(recipe) {
   const recordFile = await createJsonFile(recordName, initialRecord, recordFolderId)
   const recipeIdentity = recordFile.id
 
-  const document = await createGeneratedRecipeDocument(
-    { ...recipe, id: recipeIdentity },
-    documentFolderId
-  )
-  const savedRecord = buildRecipeRecord(recipe, {
-    driveDocId: document.id,
-    driveDocUrl: document.webViewLink,
-  })
-  await updateJsonFile(recipeIdentity, savedRecord)
+  let savedRecord = initialRecord
+  try {
+    const document = await createGeneratedRecipeDocument(
+      { ...recipe, id: recipeIdentity },
+      documentFolderId
+    )
+    savedRecord = buildRecipeRecord(recipe, {
+      driveDocId: document.id,
+      driveDocUrl: document.webViewLink,
+    })
+    await updateJsonFile(recipeIdentity, savedRecord)
+  } catch (error) {
+    throw new IncompleteSaveError(
+      'Incomplete Save: the Recipe Record was saved, but the generated Recipe Document could not be completed.',
+      recipeFromRecord(savedRecord, recipeIdentity, recordFile),
+      error
+    )
+  }
 
   return recipeFromRecord(savedRecord, recipeIdentity)
 }
@@ -290,10 +309,23 @@ export async function updateRecipeDoc(recipe) {
     documentTemplateVersion: RECIPE_DOCUMENT_TEMPLATE_VERSION,
   })
 
-  if (mergedRecord.driveDocId) {
-    try {
-      await writeRecipeDocument(mergedRecord.driveDocId, { ...mergedRecord, id: recipe.id }, { replace: true })
-    } catch {
+  try {
+    if (mergedRecord.driveDocId) {
+      try {
+        await writeRecipeDocument(mergedRecord.driveDocId, { ...mergedRecord, id: recipe.id }, { replace: true })
+      } catch {
+        const { documentFolderId } = await ensureRecipeFolders()
+        const document = await createGeneratedRecipeDocument(
+          { ...mergedRecord, id: recipe.id },
+          documentFolderId
+        )
+        mergedRecord = buildRecipeRecord(mergedRecord, {
+          driveDocId: document.id,
+          driveDocUrl: document.webViewLink,
+          documentTemplateVersion: RECIPE_DOCUMENT_TEMPLATE_VERSION,
+        })
+      }
+    } else {
       const { documentFolderId } = await ensureRecipeFolders()
       const document = await createGeneratedRecipeDocument(
         { ...mergedRecord, id: recipe.id },
@@ -305,13 +337,20 @@ export async function updateRecipeDoc(recipe) {
         documentTemplateVersion: RECIPE_DOCUMENT_TEMPLATE_VERSION,
       })
     }
-    if (isRename) {
+
+    if (isRename && mergedRecord.driveDocId) {
       await updateDriveFileMetadata(mergedRecord.driveDocId, { name: mergedRecord.name })
     }
-  }
 
-  const recordMetadata = isRename ? { name: buildRecordFileName(mergedRecord.name) } : {}
-  await updateJsonFile(recipe.id, mergedRecord, recordMetadata)
+    const recordMetadata = isRename ? { name: buildRecordFileName(mergedRecord.name) } : {}
+    await updateJsonFile(recipe.id, mergedRecord, recordMetadata)
+  } catch (error) {
+    throw new IncompleteSaveError(
+      'Incomplete Save: the Recipe Record and generated Recipe Document could not both be completed.',
+      recipeFromRecord(mergedRecord, recipe.id),
+      error
+    )
+  }
 
   return recipeFromRecord(mergedRecord, recipe.id)
 }

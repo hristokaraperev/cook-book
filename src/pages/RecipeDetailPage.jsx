@@ -13,8 +13,10 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import PeopleIcon from '@mui/icons-material/People'
+import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import { useRecipeStore } from '../store/recipeStore'
 import { deleteRecipeDoc } from '../services/driveService'
+import { getRecipeDocumentStatus, isIncompleteSave } from '../services/recipeStatus'
 
 const CATEGORY_EMOJI = {
   Breakfast: '🍳', Lunch: '🥗', Dinner: '🍽️', Dessert: '🍰', Snack: '🥨', Other: '🍴',
@@ -45,6 +47,8 @@ export default function RecipeDetailPage() {
   const totalTime = (recipe.prepTime || 0) + (recipe.cookTime || 0)
   const emoji = CATEGORY_EMOJI[recipe.category] || '🍴'
   const maxIngCal = Math.max(...(recipe.ingredients || []).map((i) => i.calories || 0), 1)
+  const documentStatus = getRecipeDocumentStatus(recipe)
+  const sharingBlocked = isIncompleteSave(recipe)
 
   const handleDelete = async () => {
     setDeleting(true)
@@ -73,10 +77,16 @@ export default function RecipeDetailPage() {
             <EditIcon />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Send via email">
-          <IconButton onClick={() => navigate('/send', { state: { recipeId: id } })} color="primary">
-            <SendIcon />
-          </IconButton>
+        <Tooltip title={sharingBlocked ? documentStatus.message : 'Send via email'}>
+          <span>
+            <IconButton
+              onClick={() => navigate('/send', { state: { recipeId: id } })}
+              color="primary"
+              disabled={sharingBlocked}
+            >
+              <SendIcon />
+            </IconButton>
+          </span>
         </Tooltip>
         {recipe.driveDocUrl && (
           <Tooltip title="Open in Google Drive">
@@ -91,6 +101,21 @@ export default function RecipeDetailPage() {
           </IconButton>
         </Tooltip>
       </Box>
+
+      {sharingBlocked && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 3 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => navigate(`/recipe/${id}/edit`)}>
+              Retry
+            </Button>
+          }
+        >
+          <Typography variant="subtitle2">{documentStatus.label}</Typography>
+          <Typography variant="body2">{documentStatus.message}</Typography>
+        </Alert>
+      )}
 
       <Paper elevation={0} sx={{ overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
         <Box
@@ -110,6 +135,15 @@ export default function RecipeDetailPage() {
               size="small"
               sx={{ mb: 1, backgroundColor: 'rgba(255,255,255,0.2)', color: 'white' }}
             />
+            {sharingBlocked && (
+              <Chip
+                icon={<WarningAmberIcon />}
+                label={documentStatus.label}
+                size="small"
+                sx={{ mb: 1, ml: 1, backgroundColor: 'rgba(255,255,255,0.9)' }}
+                color="warning"
+              />
+            )}
             <Typography variant="h3" sx={{ color: 'white', mb: 1, lineHeight: 1.2 }}>
               {recipe.name}
             </Typography>

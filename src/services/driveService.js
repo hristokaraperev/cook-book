@@ -287,8 +287,7 @@ export async function updateRecipeDoc(recipe) {
     updatedAt: recipe.updatedAt || new Date().toISOString(),
     driveDocId: recipe.driveDocId || existingRecord.driveDocId,
     driveDocUrl: recipe.driveDocUrl || existingRecord.driveDocUrl,
-    documentTemplateVersion:
-      recipe.documentTemplateVersion || existingRecord.documentTemplateVersion,
+    documentTemplateVersion: RECIPE_DOCUMENT_TEMPLATE_VERSION,
   })
 
   if (mergedRecord.driveDocId) {

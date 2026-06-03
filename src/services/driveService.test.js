@@ -567,3 +567,63 @@ test('updateRecipeDoc stamps the Recipe Record with the current save time when s
   assert.equal(updated.updatedAt, '2026-06-03T12:30:00.000Z')
   assert.equal(savedRecord.updatedAt, '2026-06-03T12:30:00.000Z')
 })
+
+test('updateRecipeDoc advances old Recipe Document template versions after regenerating on save', async (t) => {
+  useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
+  useRecipeStore.setState({ cookbookFolderId: null })
+
+  const calls = []
+  t.after(() => {
+    globalThis.fetch = undefined
+  })
+
+  globalThis.fetch = async (url, options = {}) => {
+    const request = { url: String(url), options }
+    calls.push(request)
+    const parsed = new URL(request.url)
+
+    if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
+      return jsonResponse({
+        ...sampleRecipe,
+        driveDocId: 'doc-789',
+        driveDocUrl: 'https://docs.google.com/document/d/doc-789/edit',
+        documentTemplateVersion: 0,
+        recordSchemaVersion: 1,
+      })
+    }
+
+    if (parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789') && parsed.searchParams.get('fields') === 'body(content(endIndex))') {
+      return jsonResponse({ body: { content: [{ endIndex: 1 }, { endIndex: 75 }] } })
+    }
+
+    if (options.method === 'POST' && parsed.hostname === 'docs.googleapis.com' && parsed.pathname.endsWith('/v1/documents/doc-789:batchUpdate')) {
+      return jsonResponse({})
+    }
+
+    if (options.method === 'PATCH' && parsed.pathname.endsWith('/upload/drive/v3/files/record-123')) {
+      return jsonResponse({ id: 'record-123' })
+    }
+
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${request.url}`)
+  }
+
+  const updated = await updateRecipeDoc({
+    id: 'record-123',
+    ...sampleRecipe,
+    description: 'Saved with the current template',
+    updatedAt: '2026-06-03T13:00:00.000Z',
+  })
+
+  assert.equal(updated.documentTemplateVersion, 1)
+
+  const documentUpdate = calls.find(
+    (call) => call.options.method === 'POST' && call.url.endsWith('/v1/documents/doc-789:batchUpdate')
+  )
+  assert.ok(documentUpdate, 'expected old-template Recipe Document to be regenerated on save')
+
+  const recordUpdate = calls.find(
+    (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
+  )
+  const savedRecord = multipartJsonContent(recordUpdate.options.body)
+  assert.equal(savedRecord.documentTemplateVersion, 1)
+})

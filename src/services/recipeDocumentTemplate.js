@@ -1,8 +1,17 @@
-// Intermediate Recipe Document Template model and Google Docs request builder.
+// Intermediate Recipe Document Template model and Google Docs request builders.
 //
 // buildRecipeDocumentTemplate turns a Recipe Record into display-ready
-// presentation content (no Google Docs index mechanics). buildRecipeDocumentRequests
-// turns that content into native Google Docs batchUpdate requests.
+// presentation content (no Google Docs index mechanics).
+//
+// Generating a formatted Recipe Document is a two-pass operation because Google
+// Docs cell indices cannot be predicted reliably (a table reserves structural
+// index space and a newline is inserted before it):
+//
+//   1. buildRecipeDocumentSkeleton inserts every paragraph and an empty table by
+//      appending to the end of the body, so it needs no index arithmetic.
+//   2. After the skeleton is applied, the document is read back, and
+//      buildRecipeDocumentFormatting uses the real indices from that read to fill
+//      table cells and apply styling.
 
 export function buildRecipeDocumentTemplate(recipe) {
   const template = {
@@ -56,156 +65,213 @@ function hasCalories(calories) {
   return calories !== undefined && calories !== null && calories !== ''
 }
 
-// ─── Google Docs request builder ──────────────────────────────────────────────
+// ─── Document plan ────────────────────────────────────────────────────────────
 //
-// Builds a native Google Docs batchUpdate request list from the template model.
-// A forward cursor tracks the next insertion index as content is appended top to
-// bottom, so paragraph styles and list bullets can target exact ranges.
+// The ordered list of document blocks, shared by both passes so the skeleton and
+// the formatting always agree on what appears and in what order.
 
-export function buildRecipeDocumentRequests(template) {
-  const builder = new DocumentBuilder()
+const TABLE_HEADERS = ['Ingredient', 'Amount', 'Unit', 'Calories']
 
-  builder.heading(template.title, 'TITLE')
-  if (template.description) builder.heading(template.description, 'SUBTITLE')
-  builder.summaryBlock(template.summary)
-  builder.heading('Ingredients', 'HEADING_1')
-  builder.ingredientTable(template.ingredients)
-  builder.heading('Instructions', 'HEADING_1')
-  builder.numberedList(template.instructions)
-  builder.footer(template.footer)
+function planBlocks(template) {
+  const blocks = []
 
-  return builder.requests
+  blocks.push({ kind: 'paragraph', text: template.title, namedStyleType: 'TITLE' })
+  if (template.description) {
+    blocks.push({ kind: 'paragraph', text: template.description, namedStyleType: 'SUBTITLE' })
+  }
+  if (template.summary.length) {
+    blocks.push({ kind: 'paragraph', text: summaryLine(template.summary), subtle: true })
+  }
+  if (template.ingredients.length) {
+    blocks.push({ kind: 'paragraph', text: 'Ingredients', namedStyleType: 'HEADING_1' })
+    blocks.push({ kind: 'table', rows: ingredientTableRows(template.ingredients) })
+  }
+  if (template.instructions.length) {
+    blocks.push({ kind: 'paragraph', text: 'Instructions', namedStyleType: 'HEADING_1' })
+    blocks.push({ kind: 'list', items: template.instructions, bulletPreset: 'NUMBERED_DECIMAL_NESTED' })
+  }
+  if (template.footer) {
+    blocks.push({ kind: 'paragraph', text: template.footer, subtle: true })
+  }
+
+  return blocks
 }
 
-class DocumentBuilder {
-  constructor() {
-    this.requests = []
-    this.cursor = 1
+function summaryLine(summary) {
+  return summary.map((fact) => `${fact.label}: ${fact.value}`).join('  ·  ')
+}
+
+function ingredientTableRows(ingredients) {
+  return [
+    TABLE_HEADERS,
+    ...ingredients.map((ingredient) => [
+      ingredient.name,
+      ingredient.amount,
+      ingredient.unit,
+      ingredient.calories ?? '',
+    ]),
+  ]
+}
+
+// ─── Pass 1: skeleton ─────────────────────────────────────────────────────────
+//
+// Appends every paragraph and an empty ingredient table to the end of the body.
+// Using endOfSegmentLocation avoids any index arithmetic.
+
+export function buildRecipeDocumentSkeleton(template) {
+  const requests = []
+
+  for (const block of planBlocks(template)) {
+    if (block.kind === 'paragraph') {
+      requests.push(appendParagraph(block.text))
+    } else if (block.kind === 'list') {
+      for (const item of block.items) requests.push(appendParagraph(item))
+    } else if (block.kind === 'table') {
+      requests.push({
+        insertTable: {
+          endOfSegmentLocation: {},
+          rows: block.rows.length,
+          columns: block.rows[0].length,
+        },
+      })
+    }
   }
 
-  // Appends a paragraph of text, returning its [start, end) range.
-  paragraph(text) {
-    const content = `${text}\n`
-    const start = this.cursor
-    this.requests.push({
-      insertText: { location: { index: start }, text: content },
-    })
-    this.cursor += content.length
-    return { startIndex: start, endIndex: this.cursor }
+  return requests
+}
+
+function appendParagraph(text) {
+  return { insertText: { endOfSegmentLocation: {}, text: `${text}\n` } }
+}
+
+// ─── Pass 2: formatting ───────────────────────────────────────────────────────
+//
+// Given the document body content read back after the skeleton was applied,
+// produces the table cell text inserts and the styling requests. Requests are
+// returned in descending start-index order so that the cell text inserts (the
+// only requests that shift indices) never invalidate the indices of requests
+// applied after them.
+
+export function buildRecipeDocumentFormatting(template, bodyContent = []) {
+  const elements = bodyContent.filter((element) => element.paragraph || element.table)
+  const reader = new StructureReader(elements)
+  const pending = []
+
+  for (const block of planBlocks(template)) {
+    if (block.kind === 'paragraph') {
+      const paragraph = reader.nextParagraph()
+      if (!paragraph) continue
+      if (block.namedStyleType) pending.push(namedStyleRequest(paragraph, block.namedStyleType))
+      if (block.subtle) pending.push(subtleStyleRequest(paragraph))
+    } else if (block.kind === 'list') {
+      const items = block.items.map(() => reader.nextParagraph()).filter(Boolean)
+      if (items.length) pending.push(numberedListRequest(items, block.bulletPreset))
+    } else if (block.kind === 'table') {
+      const table = reader.nextTable()
+      if (table) pending.push(...cellFillRequests(block.rows, table))
+    }
   }
 
-  heading(text, namedStyleType) {
-    const range = this.paragraph(text)
-    this.requests.push({
+  return pending
+    .sort((a, b) => b.sortIndex - a.sortIndex)
+    .map((entry) => entry.request)
+}
+
+// Walks the body content in order, yielding the next non-empty paragraph or the
+// next table on demand. Empty paragraphs (the document's own padding and the
+// newline Google inserts before a table) are skipped.
+class StructureReader {
+  constructor(elements) {
+    this.elements = elements
+    this.cursor = 0
+  }
+
+  nextParagraph() {
+    while (this.cursor < this.elements.length) {
+      const element = this.elements[this.cursor]
+      this.cursor += 1
+      if (element.paragraph && paragraphText(element.paragraph) !== '') return element
+    }
+    return null
+  }
+
+  nextTable() {
+    while (this.cursor < this.elements.length) {
+      const element = this.elements[this.cursor]
+      this.cursor += 1
+      if (element.table) return element
+    }
+    return null
+  }
+}
+
+function paragraphText(paragraph) {
+  return (paragraph.elements || [])
+    .map((element) => element.textRun?.content || '')
+    .join('')
+    .replace(/\n+$/, '')
+    .trim()
+}
+
+function namedStyleRequest(paragraph, namedStyleType) {
+  return {
+    sortIndex: paragraph.startIndex,
+    request: {
       updateParagraphStyle: {
-        range,
+        range: { startIndex: paragraph.startIndex, endIndex: paragraph.endIndex },
         paragraphStyle: { namedStyleType },
         fields: 'namedStyleType',
       },
-    })
-    return range
+    },
   }
+}
 
-  // Renders a 4-column ingredient table (header + one row per ingredient).
-  ingredientTable(ingredients) {
-    if (!ingredients || ingredients.length === 0) return
-
-    const rows = [
-      ['Ingredient', 'Amount', 'Unit', 'Calories'],
-      ...ingredients.map((ingredient) => [
-        ingredient.name,
-        ingredient.amount,
-        ingredient.unit,
-        ingredient.calories ?? '',
-      ]),
-    ]
-    this.table(rows)
-  }
-
-  // Inserts a native Google Docs table and fills its cells.
-  //
-  // Google reserves index space for the table structure. For an empty table
-  // inserted at location L with C columns, the paragraph inside cell (row, col)
-  // starts at L + 1 + row * (2C + 1) + 2 * col, and the whole empty table spans
-  // R * (2C + 1) index units. Cells are filled from last to first so that each
-  // insertion only shifts indices after cells that are still empty, keeping the
-  // remaining computed indices valid.
-  table(rows) {
-    const tableStart = this.cursor
-    const numRows = rows.length
-    const numCols = rows[0].length
-
-    this.requests.push({
-      insertTable: {
-        location: { index: tableStart },
-        rows: numRows,
-        columns: numCols,
-      },
-    })
-
-    const cells = []
-    for (let r = 0; r < numRows; r += 1) {
-      for (let c = 0; c < numCols; c += 1) {
-        const text = String(rows[r][c] ?? '')
-        if (text === '') continue
-        const index = tableStart + 1 + r * (2 * numCols + 1) + 2 * c
-        cells.push({ index, text })
-      }
-    }
-
-    let insertedLength = 0
-    for (const cell of cells.reverse()) {
-      this.requests.push({
-        insertText: { location: { index: cell.index }, text: cell.text },
-      })
-      insertedLength += cell.text.length
-    }
-
-    this.cursor = tableStart + numRows * (2 * numCols + 1) + insertedLength
-  }
-
-  // Renders a compact one-line summary of available facts in restrained styling.
-  summaryBlock(summary) {
-    if (!summary || summary.length === 0) return
-    const line = summary.map((fact) => `${fact.label}: ${fact.value}`).join('  ·  ')
-    this.subtleParagraph(line)
-  }
-
-  // Renders a subtle footer at the end of the document.
-  footer(text) {
-    if (!text) return
-    this.subtleParagraph(text)
-  }
-
-  // A paragraph in restrained styling: smaller, muted text for supporting content.
-  subtleParagraph(text) {
-    const range = this.paragraph(text)
-    this.requests.push({
+function subtleStyleRequest(paragraph) {
+  return {
+    sortIndex: paragraph.startIndex,
+    request: {
       updateTextStyle: {
-        range,
+        range: { startIndex: paragraph.startIndex, endIndex: paragraph.endIndex },
         textStyle: {
           fontSize: { magnitude: 9, unit: 'PT' },
           foregroundColor: { color: { rgbColor: { red: 0.4, green: 0.4, blue: 0.4 } } },
         },
         fields: 'fontSize,foregroundColor',
       },
-    })
-    return range
+    },
   }
+}
 
-  // Renders steps as a native numbered list rather than manually numbered text.
-  numberedList(steps) {
-    if (!steps || steps.length === 0) return
-
-    const startIndex = this.cursor
-    for (const step of steps) this.paragraph(step)
-    const endIndex = this.cursor
-
-    this.requests.push({
+function numberedListRequest(items, bulletPreset) {
+  const startIndex = items[0].startIndex
+  const endIndex = items[items.length - 1].endIndex
+  return {
+    sortIndex: startIndex,
+    request: {
       createParagraphBullets: {
         range: { startIndex, endIndex },
-        bulletPreset: 'NUMBERED_DECIMAL_NESTED',
+        bulletPreset,
       },
-    })
+    },
   }
+}
+
+function cellFillRequests(rows, tableElement) {
+  const tableRows = tableElement.table?.tableRows || []
+  const requests = []
+
+  rows.forEach((cells, rowIndex) => {
+    cells.forEach((value, columnIndex) => {
+      const text = String(value ?? '')
+      if (text === '') return
+      const contentStart = tableRows[rowIndex]?.tableCells?.[columnIndex]?.content?.[0]?.startIndex
+      if (contentStart == null) return
+      requests.push({
+        sortIndex: contentStart,
+        request: { insertText: { location: { index: contentStart }, text } },
+      })
+    })
+  })
+
+  return requests
 }

@@ -3,7 +3,8 @@ import { useRecipeStore } from '../store/recipeStore.js'
 import { CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION } from './recipeStatus.js'
 import {
   buildRecipeDocumentTemplate,
-  buildRecipeDocumentRequests,
+  buildRecipeDocumentSkeleton,
+  buildRecipeDocumentFormatting,
 } from './recipeDocumentTemplate.js'
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3'
@@ -260,28 +261,47 @@ async function updateDriveFileMetadata(fileId, metadata) {
   return res.json()
 }
 
+// Writes a formatted Recipe Document in two passes: first append the skeleton
+// (paragraphs and an empty table) without index math, then read the document back
+// and apply table cell text and styling at the real indices Google assigns.
 async function writeRecipeDocument(documentId, recipe, options = {}) {
-  const requests = []
+  const template = buildRecipeDocumentTemplate(recipe)
+
+  const skeleton = buildRecipeDocumentSkeleton(template)
   if (options.replace) {
     const endIndex = await getDocumentEndIndex(documentId)
     if (endIndex > 2) {
-      requests.push({
+      skeleton.unshift({
         deleteContentRange: {
           range: { startIndex: 1, endIndex: endIndex - 1 },
         },
       })
     }
   }
+  await batchUpdateDocument(documentId, skeleton)
 
-  const template = buildRecipeDocumentTemplate(recipe)
-  requests.push(...buildRecipeDocumentRequests(template))
+  const content = await getDocumentContent(documentId)
+  const formatting = buildRecipeDocumentFormatting(template, content)
+  if (formatting.length) await batchUpdateDocument(documentId, formatting)
+}
 
+async function batchUpdateDocument(documentId, requests) {
+  if (!requests.length) return
   const res = await fetch(`${DOCS_API}/documents/${documentId}:batchUpdate`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
   })
   if (!res.ok) throw new Error(`Failed to write recipe document: ${res.status}`)
+}
+
+async function getDocumentContent(documentId) {
+  const res = await fetch(`${DOCS_API}/documents/${documentId}?fields=body(content)`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`Failed to read recipe document: ${res.status}`)
+  const document = await res.json()
+  return document.body?.content || []
 }
 
 async function getDocumentEndIndex(documentId) {

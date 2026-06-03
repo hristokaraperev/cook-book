@@ -1,6 +1,10 @@
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
 import { CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION } from './recipeStatus.js'
+import {
+  buildRecipeDocumentTemplate,
+  buildRecipeDocumentRequests,
+} from './recipeDocumentTemplate.js'
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3'
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3'
@@ -269,12 +273,8 @@ async function writeRecipeDocument(documentId, recipe, options = {}) {
     }
   }
 
-  requests.push({
-    insertText: {
-      location: { index: 1 },
-      text: buildRecipeDocumentText(recipe),
-    },
-  })
+  const template = buildRecipeDocumentTemplate(recipe)
+  requests.push(...buildRecipeDocumentRequests(template))
 
   const res = await fetch(`${DOCS_API}/documents/${documentId}:batchUpdate`, {
     method: 'POST',
@@ -463,34 +463,6 @@ function buildRecordFileName(name) {
     .slice(0, 60) || 'recipe'
   const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   return `${readable}-${suffix}.json`
-}
-
-function buildRecipeDocumentText(recipe) {
-  const totalTime = (recipe.prepTime || 0) + (recipe.cookTime || 0)
-  const ingredients = (recipe.ingredients || [])
-    .map((ingredient) => `- ${ingredient.name}: ${ingredient.amount} ${ingredient.unit} (${ingredient.calories || 0} kcal)`)
-    .join('\n')
-  const instructions = (recipe.instructions || [])
-    .map((step, index) => `${index + 1}. ${step}`)
-    .join('\n')
-
-  return [
-    recipe.name,
-    recipe.category || '',
-    recipe.description || '',
-    '',
-    `${recipe.servings || 1} servings`,
-    `${recipe.caloriesPerServing || 0} kcal per serving`,
-    totalTime ? `${totalTime} minutes total` : '',
-    '',
-    'Ingredients',
-    ingredients,
-    '',
-    'Instructions',
-    instructions,
-  ]
-    .filter((line) => line !== '')
-    .join('\n')
 }
 
 function escapeDriveQueryValue(value) {

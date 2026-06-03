@@ -10,6 +10,7 @@ import {
 } from './driveService.js'
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
+import { CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION } from './recipeStatus.js'
 
 const jsonResponse = (body, init = {}) => ({
   ok: init.ok ?? true,
@@ -123,7 +124,7 @@ test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Docum
   assert.equal(created.id, 'record-123')
   assert.equal(created.driveDocId, 'doc-789')
   assert.equal(created.driveDocUrl, 'https://docs.google.com/document/d/doc-789/edit')
-  assert.equal(created.documentTemplateVersion, 1)
+  assert.equal(created.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
 
   const recordCreateIndex = calls.findIndex(
     (call) => call.options.method === 'POST' && call.url.includes('/upload/drive/v3/files') && String(call.options.body).includes('application/json')
@@ -138,6 +139,22 @@ test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Docum
     calls.some((call) => String(call.options.body).includes('Content-Type: text/html')),
     false,
     'generated Recipe Documents must not be created via HTML upload conversion'
+  )
+
+  const batchUpdate = calls.find((call) => call.url.endsWith('/v1/documents/doc-789:batchUpdate'))
+  assert.ok(batchUpdate, 'expected the generated Recipe Document to be formatted via batchUpdate')
+  const generatedRequests = JSON.parse(batchUpdate.options.body).requests
+  assert.ok(
+    generatedRequests.some((request) => request.insertTable),
+    'create flow must send a native ingredient table, not a single plain-text insert'
+  )
+  assert.ok(
+    generatedRequests.some((request) => request.createParagraphBullets),
+    'create flow must send native numbered instructions'
+  )
+  assert.ok(
+    generatedRequests.length > 1,
+    'formatted output must be more than one plain insertText request'
   )
 })
 
@@ -469,8 +486,21 @@ test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Do
       range: { startIndex: 1, endIndex: 119 },
     },
   })
-  assert.match(documentRequests[1].insertText.text, /^Lemon Pasta\n/)
-  assert.match(documentRequests[1].insertText.text, /Toss with lemon and basil/)
+  const formatting = documentRequests.slice(1)
+  assert.ok(
+    formatting.some((request) => request.insertTable),
+    'expected the existing document to be rewritten with a native ingredient table'
+  )
+  assert.ok(
+    formatting.some((request) => request.createParagraphBullets),
+    'expected instructions to be rewritten as a native numbered list'
+  )
+  const insertedDocumentText = formatting
+    .filter((request) => request.insertText)
+    .map((request) => request.insertText.text)
+    .join('')
+  assert.match(insertedDocumentText, /Lemon Pasta/)
+  assert.match(insertedDocumentText, /Toss with lemon and basil/)
 
   const recordUpdate = calls.find(
     (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
@@ -559,7 +589,7 @@ test('updateRecipeDoc recreates a missing Recipe Document and patches the Recipe
   assert.equal(updated.id, 'record-123')
   assert.equal(updated.driveDocId, 'replacement-doc')
   assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/replacement-doc/edit')
-  assert.equal(updated.documentTemplateVersion, 1)
+  assert.equal(updated.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
   assert.equal(
     calls.some((call) => call.url.endsWith('/v1/documents/deleted-doc:batchUpdate')),
     false,
@@ -878,7 +908,7 @@ test('updateRecipeDoc advances old Recipe Document template versions after regen
     updatedAt: '2026-06-03T13:00:00.000Z',
   })
 
-  assert.equal(updated.documentTemplateVersion, 1)
+  assert.equal(updated.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
 
   const documentUpdate = calls.find(
     (call) => call.options.method === 'POST' && call.url.endsWith('/v1/documents/doc-789:batchUpdate')
@@ -889,7 +919,7 @@ test('updateRecipeDoc advances old Recipe Document template versions after regen
     (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
   )
   const savedRecord = multipartJsonContent(recordUpdate.options.body)
-  assert.equal(savedRecord.documentTemplateVersion, 1)
+  assert.equal(savedRecord.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
 })
 
 test('grantViewerAccess grants explicit viewer access by email on the Drive file', async (t) => {

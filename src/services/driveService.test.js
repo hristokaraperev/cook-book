@@ -10,6 +10,7 @@ import {
 } from './driveService.js'
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
+import { CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION } from './recipeStatus.js'
 
 const jsonResponse = (body, init = {}) => ({
   ok: init.ok ?? true,
@@ -54,6 +55,68 @@ const sampleRecipe = {
   updatedAt: '2026-06-03T10:00:00.000Z',
 }
 
+// The Recipe Document is written in two passes; the second pass reads the
+// document body back to discover real indices. This models that read-back.
+function isDocumentContentRead(parsed) {
+  return (
+    parsed.hostname === 'docs.googleapis.com' &&
+    /\/v1\/documents\/[^:/]+$/.test(parsed.pathname) &&
+    parsed.searchParams.get('fields') === 'body(content)'
+  )
+}
+
+function recipeDocumentContentResponse(ingredientCount = 2, stepCount = 2) {
+  const content = []
+  let cursor = 1
+  const para = (text) => {
+    const body = `${text}\n`
+    content.push({
+      startIndex: cursor,
+      endIndex: cursor + body.length,
+      paragraph: { elements: [{ textRun: { content: body } }] },
+    })
+    cursor += body.length
+  }
+  const empty = () => {
+    content.push({ startIndex: cursor, endIndex: cursor + 1, paragraph: { elements: [{ textRun: { content: '\n' } }] } })
+    cursor += 1
+  }
+  const table = (rows, columns) => {
+    const start = cursor
+    cursor += 1
+    const tableRows = []
+    for (let r = 0; r < rows; r += 1) {
+      const tableCells = []
+      for (let c = 0; c < columns; c += 1) {
+        tableCells.push({ content: [{ startIndex: cursor + 1, endIndex: cursor + 2, paragraph: { elements: [{ textRun: { content: '\n' } }] } }] })
+        cursor += 2
+      }
+      cursor += 1
+      tableRows.push({ tableCells })
+    }
+    content.push({ startIndex: start, endIndex: cursor, table: { rows, columns, tableRows } })
+  }
+
+  para('Title')
+  para('Description')
+  para('Summary')
+  para('Ingredients')
+  empty()
+  table(ingredientCount + 1, 4)
+  empty()
+  para('Instructions')
+  for (let i = 0; i < stepCount; i += 1) para(`Step ${i + 1}`)
+  para('Footer')
+
+  return jsonResponse({ body: { content } })
+}
+
+function batchUpdateRequestsFor(calls, documentId) {
+  return calls
+    .filter((call) => call.options.method === 'POST' && call.url.endsWith(`/v1/documents/${documentId}:batchUpdate`))
+    .flatMap((call) => JSON.parse(call.options.body).requests)
+}
+
 test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Document from that record', async (t) => {
   useAuthStore.setState({ accessToken: 'token', isSignedIn: true })
   useRecipeStore.setState({ cookbookFolderId: null })
@@ -67,6 +130,7 @@ test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Docum
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const q = parsed.searchParams.get('q') || ''
     const contentType = options.headers?.['Content-Type'] || ''
     const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
@@ -123,7 +187,7 @@ test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Docum
   assert.equal(created.id, 'record-123')
   assert.equal(created.driveDocId, 'doc-789')
   assert.equal(created.driveDocUrl, 'https://docs.google.com/document/d/doc-789/edit')
-  assert.equal(created.documentTemplateVersion, 1)
+  assert.equal(created.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
 
   const recordCreateIndex = calls.findIndex(
     (call) => call.options.method === 'POST' && call.url.includes('/upload/drive/v3/files') && String(call.options.body).includes('application/json')
@@ -138,6 +202,20 @@ test('createRecipeDoc saves a Recipe Record first, then generates a Recipe Docum
     calls.some((call) => String(call.options.body).includes('Content-Type: text/html')),
     false,
     'generated Recipe Documents must not be created via HTML upload conversion'
+  )
+
+  const generatedRequests = batchUpdateRequestsFor(calls, 'doc-789')
+  assert.ok(
+    generatedRequests.some((request) => request.insertTable),
+    'create flow must send a native ingredient table, not a single plain-text insert'
+  )
+  assert.ok(
+    generatedRequests.some((request) => request.createParagraphBullets),
+    'create flow must send native numbered instructions'
+  )
+  assert.ok(
+    generatedRequests.some((request) => request.insertText && request.insertText.endOfSegmentLocation),
+    'create flow must append the document skeleton instead of inserting at a fixed index'
   )
 })
 
@@ -154,6 +232,7 @@ test('createRecipeDoc reports an Incomplete Save when the Record is persisted bu
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const q = parsed.searchParams.get('q') || ''
     const contentType = options.headers?.['Content-Type'] || ''
     const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
@@ -215,6 +294,7 @@ test('listRecipes lists Recipe Records from .data and ignores old Google Docs', 
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const q = parsed.searchParams.get('q') || ''
 
     if (q.includes("mimeType='application/vnd.google-apps.document'")) {
@@ -286,6 +366,7 @@ test('createRecipeDoc allows duplicate recipe names by using disambiguated recor
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const q = parsed.searchParams.get('q') || ''
     const contentType = options.headers?.['Content-Type'] || ''
     const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
@@ -354,6 +435,7 @@ test('deleteRecipeDoc deletes the Recipe Record before the generated Recipe Docu
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
 
     if (parsed.pathname.endsWith('/drive/v3/files/record-1') && parsed.searchParams.get('alt') === 'media') {
       return jsonResponse({ name: 'Lemon Pasta', driveDocId: 'doc-1', recordSchemaVersion: 1 })
@@ -384,6 +466,7 @@ test('deleteRecipeDoc returns cleanupFailed when Recipe Document deletion fails 
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
 
     if (parsed.pathname.endsWith('/drive/v3/files/record-1') && parsed.searchParams.get('alt') === 'media') {
       return jsonResponse({ name: 'Lemon Pasta', driveDocId: 'doc-1', recordSchemaVersion: 1 })
@@ -418,6 +501,7 @@ test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Do
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
 
     if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
       return jsonResponse({
@@ -459,18 +543,32 @@ test('updateRecipeDoc saves the Recipe Record and updates the existing Recipe Do
   assert.equal(updated.driveDocId, 'doc-789')
   assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/doc-789/edit')
 
-  const documentUpdate = calls.find(
+  const documentBatches = calls.filter(
     (call) => call.options.method === 'POST' && call.url.endsWith('/v1/documents/doc-789:batchUpdate')
   )
-  assert.ok(documentUpdate, 'expected existing Recipe Document to be updated in place')
-  const documentRequests = JSON.parse(documentUpdate.options.body).requests
-  assert.deepEqual(documentRequests[0], {
+  assert.equal(documentBatches.length, 2, 'expected a skeleton pass and a formatting pass over the existing document')
+  const skeletonRequests = JSON.parse(documentBatches[0].options.body).requests
+  const formattingRequests = JSON.parse(documentBatches[1].options.body).requests
+
+  assert.deepEqual(skeletonRequests[0], {
     deleteContentRange: {
       range: { startIndex: 1, endIndex: 119 },
     },
-  })
-  assert.match(documentRequests[1].insertText.text, /^Lemon Pasta\n/)
-  assert.match(documentRequests[1].insertText.text, /Toss with lemon and basil/)
+  }, 'the existing document content is cleared before the new skeleton is appended')
+  assert.ok(
+    skeletonRequests.some((request) => request.insertTable),
+    'expected the existing document to be rewritten with a native ingredient table'
+  )
+  assert.ok(
+    formattingRequests.some((request) => request.createParagraphBullets),
+    'expected instructions to be rewritten as a native numbered list'
+  )
+  const skeletonText = skeletonRequests
+    .filter((request) => request.insertText)
+    .map((request) => request.insertText.text)
+    .join('')
+  assert.match(skeletonText, /Lemon Pasta/)
+  assert.match(skeletonText, /Toss with lemon and basil/)
 
   const recordUpdate = calls.find(
     (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
@@ -495,6 +593,7 @@ test('updateRecipeDoc recreates a missing Recipe Document and patches the Recipe
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const q = parsed.searchParams.get('q') || ''
     const contentType = options.headers?.['Content-Type'] || ''
     const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
@@ -559,7 +658,7 @@ test('updateRecipeDoc recreates a missing Recipe Document and patches the Recipe
   assert.equal(updated.id, 'record-123')
   assert.equal(updated.driveDocId, 'replacement-doc')
   assert.equal(updated.driveDocUrl, 'https://docs.google.com/document/d/replacement-doc/edit')
-  assert.equal(updated.documentTemplateVersion, 1)
+  assert.equal(updated.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
   assert.equal(
     calls.some((call) => call.url.endsWith('/v1/documents/deleted-doc:batchUpdate')),
     false,
@@ -588,6 +687,7 @@ test('updateRecipeDoc completes an Incomplete Save by generating a missing Recip
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const q = parsed.searchParams.get('q') || ''
     const contentType = options.headers?.['Content-Type'] || ''
     const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
@@ -667,6 +767,7 @@ test('updateRecipeDoc reports an Incomplete Save when the Document is updated bu
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
 
     if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
       return jsonResponse({
@@ -725,6 +826,7 @@ test('updateRecipeDoc renames the Recipe Record and Recipe Document without chan
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     const contentType = options.headers?.['Content-Type'] || ''
     const body = options.body && contentType === 'application/json' ? JSON.parse(options.body) : null
 
@@ -793,6 +895,7 @@ test('updateRecipeDoc stamps the Recipe Record with the current save time when s
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
 
     if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
       return jsonResponse({
@@ -845,6 +948,7 @@ test('updateRecipeDoc advances old Recipe Document template versions after regen
     const request = { url: String(url), options }
     calls.push(request)
     const parsed = new URL(request.url)
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
 
     if (parsed.pathname.endsWith('/drive/v3/files/record-123') && parsed.searchParams.get('alt') === 'media') {
       return jsonResponse({
@@ -878,7 +982,7 @@ test('updateRecipeDoc advances old Recipe Document template versions after regen
     updatedAt: '2026-06-03T13:00:00.000Z',
   })
 
-  assert.equal(updated.documentTemplateVersion, 1)
+  assert.equal(updated.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
 
   const documentUpdate = calls.find(
     (call) => call.options.method === 'POST' && call.url.endsWith('/v1/documents/doc-789:batchUpdate')
@@ -889,7 +993,7 @@ test('updateRecipeDoc advances old Recipe Document template versions after regen
     (call) => call.options.method === 'PATCH' && call.url.includes('/upload/drive/v3/files/record-123')
   )
   const savedRecord = multipartJsonContent(recordUpdate.options.body)
-  assert.equal(savedRecord.documentTemplateVersion, 1)
+  assert.equal(savedRecord.documentTemplateVersion, CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION)
 })
 
 test('grantViewerAccess grants explicit viewer access by email on the Drive file', async (t) => {
@@ -900,6 +1004,7 @@ test('grantViewerAccess grants explicit viewer access by email on the Drive file
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     if (options.method === 'POST' && parsed.pathname.endsWith('/drive/v3/files/doc-123/permissions')) {
       permissionCall = { url: String(url), body: JSON.parse(options.body) }
       return { ok: true, status: 200, json: async () => ({ id: 'perm-1', role: 'reader' }) }
@@ -922,6 +1027,7 @@ test('grantViewerAccess throws when the Drive Permissions API returns an error',
 
   globalThis.fetch = async (url, options = {}) => {
     const parsed = new URL(String(url))
+    if (isDocumentContentRead(parsed)) return recipeDocumentContentResponse()
     if (options.method === 'POST' && parsed.pathname.endsWith('/drive/v3/files/doc-123/permissions')) {
       return { ok: false, status: 403, json: async () => ({ error: { message: 'Forbidden' } }) }
     }

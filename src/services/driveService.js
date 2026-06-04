@@ -1,6 +1,11 @@
 import { useAuthStore } from '../store/authStore.js'
 import { useRecipeStore } from '../store/recipeStore.js'
 import { CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION } from './recipeStatus.js'
+import {
+  buildRecipeDocumentTemplate,
+  buildRecipeDocumentSkeleton,
+  buildRecipeDocumentFormatting,
+} from './recipeDocumentTemplate.js'
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3'
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3'
@@ -256,32 +261,47 @@ async function updateDriveFileMetadata(fileId, metadata) {
   return res.json()
 }
 
+// Writes a formatted Recipe Document in two passes: first append the skeleton
+// (paragraphs and an empty table) without index math, then read the document back
+// and apply table cell text and styling at the real indices Google assigns.
 async function writeRecipeDocument(documentId, recipe, options = {}) {
-  const requests = []
+  const template = buildRecipeDocumentTemplate(recipe)
+
+  const skeleton = buildRecipeDocumentSkeleton(template)
   if (options.replace) {
     const endIndex = await getDocumentEndIndex(documentId)
     if (endIndex > 2) {
-      requests.push({
+      skeleton.unshift({
         deleteContentRange: {
           range: { startIndex: 1, endIndex: endIndex - 1 },
         },
       })
     }
   }
+  await batchUpdateDocument(documentId, skeleton)
 
-  requests.push({
-    insertText: {
-      location: { index: 1 },
-      text: buildRecipeDocumentText(recipe),
-    },
-  })
+  const content = await getDocumentContent(documentId)
+  const formatting = buildRecipeDocumentFormatting(template, content)
+  if (formatting.length) await batchUpdateDocument(documentId, formatting)
+}
 
+async function batchUpdateDocument(documentId, requests) {
+  if (!requests.length) return
   const res = await fetch(`${DOCS_API}/documents/${documentId}:batchUpdate`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
   })
   if (!res.ok) throw new Error(`Failed to write recipe document: ${res.status}`)
+}
+
+async function getDocumentContent(documentId) {
+  const res = await fetch(`${DOCS_API}/documents/${documentId}?fields=body(content)`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`Failed to read recipe document: ${res.status}`)
+  const document = await res.json()
+  return document.body?.content || []
 }
 
 async function getDocumentEndIndex(documentId) {
@@ -463,34 +483,6 @@ function buildRecordFileName(name) {
     .slice(0, 60) || 'recipe'
   const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   return `${readable}-${suffix}.json`
-}
-
-function buildRecipeDocumentText(recipe) {
-  const totalTime = (recipe.prepTime || 0) + (recipe.cookTime || 0)
-  const ingredients = (recipe.ingredients || [])
-    .map((ingredient) => `- ${ingredient.name}: ${ingredient.amount} ${ingredient.unit} (${ingredient.calories || 0} kcal)`)
-    .join('\n')
-  const instructions = (recipe.instructions || [])
-    .map((step, index) => `${index + 1}. ${step}`)
-    .join('\n')
-
-  return [
-    recipe.name,
-    recipe.category || '',
-    recipe.description || '',
-    '',
-    `${recipe.servings || 1} servings`,
-    `${recipe.caloriesPerServing || 0} kcal per serving`,
-    totalTime ? `${totalTime} minutes total` : '',
-    '',
-    'Ingredients',
-    ingredients,
-    '',
-    'Instructions',
-    instructions,
-  ]
-    .filter((line) => line !== '')
-    .join('\n')
 }
 
 function escapeDriveQueryValue(value) {

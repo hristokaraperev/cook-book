@@ -1,4 +1,4 @@
-export const CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION = 1
+export const CURRENT_RECIPE_DOCUMENT_TEMPLATE_VERSION = 2
 
 export function hasCurrentGeneratedRecipeDocument(recipe) {
   return Boolean(

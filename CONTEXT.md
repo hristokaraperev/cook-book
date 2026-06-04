@@ -17,8 +17,8 @@ A human-readable document generated from a Recipe Record for viewing or sharing 
 _Avoid_: Recipe source, canonical recipe, stored recipe
 
 **Recipe Document Template**:
-The code-owned presentation model used to generate a Recipe Document from a Recipe Record.
-_Avoid_: Manual Doc formatting, document edits, Drive styling
+The single code-owned presentation model used to generate a Recipe Document from a Recipe Record.
+_Avoid_: Manual Doc formatting, document edits, Drive styling, formatting options
 
 **Recipe Identity**:
 The stable identity of a recipe, owned by its Recipe Record and preserved even if generated documents are recreated.
